@@ -25,7 +25,28 @@ enum opcode {
   CLEAR_STACK = 0x2,
   PRINT_STATE = 0x3,
   PUSH = 0x4,
+  POP = 0xAA,
+
+  /* Binary instructions */
   ADD = 0x5,
+  SUB = 0x6,
+  DIV = 0x8,
+  MUL = 0x9,
+  MOD = 0xA,
+
+  AND = 0xB,
+  OR = 0xC,
+  XOR = 0xE,
+
+  NEQ = 0xF,
+  EQ = 0x10,
+  LT = 0x11,
+  LE = 0x12,
+  GT = 0x13,
+  GE = 0x14,
+
+  /* Unitary instructions */
+  NOT = 0x15,
 };
 
 typedef enum retcode { ERROR, SUCCESS } retcode;

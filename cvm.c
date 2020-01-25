@@ -128,6 +128,28 @@ inline retcode vm_run_step(struct vm *vm) {
 
   uint64_t instruction = dec_u64(curpos);
   uint8_t opcode = (uint8_t)(instruction >> 56);
+
+  if (opcode >= ADD && opcode <= GE) {
+    if (stack_pop(&vm->main, &right) == ERROR) {
+      printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
+             curpos);
+      return ERROR;
+    }
+
+    if (stack_pop(&vm->main, &left) == ERROR) {
+      printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
+             curpos);
+      return ERROR;
+    }
+  } else if (opcode == NOT) {
+    if (stack_pop(&vm->main, &left) == ERROR) {
+      printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    printf("UNARY OP: %d\n", left);
+  }
+
   switch ((enum opcode)opcode) {
   case NOP:
     break;
@@ -148,31 +170,76 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case PUSH:
     aux = (int32_t)(instruction & ~((uint64_t)opcode << 56));
-    if (stack_push(&vm->main, aux) == ERROR) {
-      printf("error: stack overflow\n");
-      return ERROR;
-    }
+    break;
+  case POP:
+    stack_pop(&vm->main, &aux);
     break;
   case ADD:
-    if (stack_pop(&vm->main, &right) == ERROR) {
-      printf("error: missing right parameter for add\n");
-      return ERROR;
-    }
-
-    if (stack_pop(&vm->main, &left) == ERROR) {
-      printf("error: missing left parameter for add\n");
-      return ERROR;
-    }
-
     aux = left + right;
-    if (stack_push(&vm->main, aux) == ERROR) {
-      printf("error: stack overflow on add\n");
+    break;
+  case SUB:
+    aux = left - right;
+    break;
+  case MUL:
+    aux = left * right;
+    break;
+  case DIV:
+    if (right == 0) {
+      printf("error: divide by zero, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
+
+    aux = left / right;
+    break;
+  case MOD:
+    if (right == 0) {
+      printf("error: modulo by zero, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    aux = left % right;
+    break;
+  case AND:
+    aux = left & right;
+    break;
+  case OR:
+    aux = left | right;
+    break;
+  case XOR:
+    aux = left ^ right;
+    break;
+  case NEQ:
+    aux = left != right;
+    break;
+  case EQ:
+    aux = left == right;
+    break;
+  case LT:
+    aux = left < right;
+    break;
+  case LE:
+    aux = left <= right;
+    break;
+  case GT:
+    aux = left > right;
+    break;
+  case GE:
+    aux = left >= right;
+    break;
+  case NOT:
+    aux = ~left;
     break;
   default:
-    printf("unrecognized or unsupoorted opcode: %d\n", opcode);
+    printf("error: unrecognized or unsupported, opc: %d, addr: %p\n", opcode,
+           curpos);
     return ERROR;
+  }
+
+  if (opcode == PUSH || (opcode >= ADD && opcode <= NOT)) {
+    if (stack_push(&vm->main, aux) == ERROR) {
+      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
   }
 
   return SUCCESS;
