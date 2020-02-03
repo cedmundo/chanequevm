@@ -27,7 +27,7 @@ enum opcode {
   PUSH = 0x4,
   POP = 0xAA,
 
-  /* Binary instructions */
+  /* With two stack arguments */
   ADD = 0x5,
   SUB = 0x6,
   DIV = 0x8,
@@ -45,8 +45,13 @@ enum opcode {
   GT = 0x13,
   GE = 0x14,
 
-  /* Unitary instructions */
+  /* With one stack argument */
   NOT = 0x15,
+  JNZ = 0x16,
+  JZ = 0x17,
+
+  /* Without any stack arguments */
+  JMP = 0xAB,
 };
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
@@ -66,4 +71,7 @@ void vm_free(struct vm *vm);
 retcode vm_run_step(struct vm *vm);
 retcode vm_run(struct vm *vm);
 
+retcode vm_jmp(struct vm *vm, size_t new_offset);
+
+#define get_arg0(i, o) (int32_t)(i & ~((uint64_t)o << 56))
 #endif /* CVM_H */

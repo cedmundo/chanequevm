@@ -107,6 +107,18 @@ void vm_free(struct vm *vm) {
   stack_free(&vm->main);
 }
 
+inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
+  if (new_offset <= (vm->code_size - 8)) {
+    vm->code_offset = new_offset;
+    return SUCCESS;
+  }
+
+  printf("error: cannot jump outside from code segment, code addr: %p, offset: "
+         "%ld, new addr: %p\n",
+         vm->code, new_offset, vm->code + new_offset);
+  return ERROR;
+}
+
 inline retcode vm_run_step(struct vm *vm) {
   assert(vm != NULL);
 
@@ -141,13 +153,11 @@ inline retcode vm_run_step(struct vm *vm) {
              curpos);
       return ERROR;
     }
-  } else if (opcode == NOT) {
+  } else if (opcode >= NOT && opcode <= JZ) {
     if (stack_pop(&vm->main, &left) == ERROR) {
       printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
-
-    printf("UNARY OP: %d\n", left);
   }
 
   switch ((enum opcode)opcode) {
@@ -169,7 +179,7 @@ inline retcode vm_run_step(struct vm *vm) {
     stack_print(&vm->main);
     break;
   case PUSH:
-    aux = (int32_t)(instruction & ~((uint64_t)opcode << 56));
+    aux = get_arg0(instruction, opcode);
     break;
   case POP:
     stack_pop(&vm->main, &aux);
@@ -228,6 +238,25 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case NOT:
     aux = ~left;
+    break;
+  case JNZ:
+    if (left != 0) {
+      aux = get_arg0(instruction, opcode);
+      vm_jmp(vm, aux);
+    }
+    stack_push(&vm->main, left);
+    break;
+  case JZ:
+    if (left == 0) {
+      aux = get_arg0(instruction, opcode);
+      vm_jmp(vm, aux);
+    }
+    stack_push(&vm->main, left);
+    break;
+  case JMP:
+    aux = get_arg0(instruction, opcode);
+    vm_jmp(vm, aux);
+    stack_push(&vm->main, left);
     break;
   default:
     printf("error: unrecognized or unsupported, opc: %d, addr: %p\n", opcode,
