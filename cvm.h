@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 struct stack {
-  int32_t *bot;
+  int64_t *bot;
   size_t top;
   size_t cap;
 };
@@ -12,7 +12,8 @@ struct stack {
 // this is an stack-based virtual machine
 //  note: for the moment we are only going to support integer operands
 struct vm {
-  struct stack main;
+  struct stack main; // main ops stack
+  struct stack mem;  // runtime allocated memory
   int halted;
   uint8_t *code;
   size_t code_size;
@@ -52,6 +53,14 @@ enum opcode {
 
   /* Without any stack arguments */
   JMP = 0xAB,
+
+  /* Memory stack */
+  RESV = 0x30,
+  FREE = 0x31,
+  BULK = 0x32,
+  LOAD = 0x33,
+  STORE = 0x34,
+  INSM = 0x35,
 };
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
@@ -63,8 +72,8 @@ void stack_init(struct stack *s, size_t cap);
 void stack_free(struct stack *s);
 void stack_print(struct stack *s);
 
-retcode stack_push(struct stack *s, int32_t v);
-retcode stack_pop(struct stack *s, int32_t *v);
+retcode stack_push(struct stack *s, int64_t v);
+retcode stack_pop(struct stack *s, int64_t *v);
 
 retcode vm_init(struct vm *vm, const char *filename);
 void vm_free(struct vm *vm);

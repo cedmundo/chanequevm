@@ -17,8 +17,8 @@ inline uint64_t dec_u64(uint8_t bytes[]) {
 
 void stack_init(struct stack *s, size_t cap) {
   assert(s != NULL);
-  s->bot = malloc(sizeof(int32_t) * cap);
-  memset(s->bot, 0L, sizeof(int32_t) * cap);
+  s->bot = malloc(sizeof(int64_t) * cap);
+  memset(s->bot, 0L, sizeof(int64_t) * cap);
   s->cap = cap;
   s->top = 0L;
 }
@@ -38,11 +38,11 @@ void stack_print(struct stack *s) {
   }
 
   for (size_t i = 0; i < s->top; i++) {
-    printf("\t\t %ld: %d\n", i, s->bot[i]);
+    printf("\t\t %ld: %ld\n", i, s->bot[i]);
   }
 }
 
-retcode stack_push(struct stack *s, int32_t v) {
+retcode stack_push(struct stack *s, int64_t v) {
   assert(s != NULL);
   if (s->top >= s->cap) {
     return ERROR;
@@ -53,7 +53,7 @@ retcode stack_push(struct stack *s, int32_t v) {
   return SUCCESS;
 }
 
-retcode stack_pop(struct stack *s, int32_t *v) {
+retcode stack_pop(struct stack *s, int64_t *v) {
   assert(s != NULL);
   if (s->top < 0) {
     return ERROR;
@@ -72,6 +72,7 @@ retcode vm_init(struct vm *vm, const char *filename) {
   assert(filename != NULL);
 
   stack_init(&vm->main, 32);
+  stack_init(&vm->mem, 1);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
@@ -105,6 +106,7 @@ void vm_free(struct vm *vm) {
   }
 
   stack_free(&vm->main);
+  stack_free(&vm->mem);
 }
 
 inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
@@ -127,9 +129,10 @@ inline retcode vm_run_step(struct vm *vm) {
     return ERROR;
   }
 
-  int32_t aux = 0;
-  int32_t left = 0;
-  int32_t right = 0;
+  int64_t aux = 0;
+  int64_t left = 0;
+  int64_t right = 0;
+  uint8_t *udata = NULL;
 
   uint8_t *curpos = vm->code + vm->code_offset;
   if (curpos > (vm->code + vm->code_size - 8)) {
@@ -141,7 +144,7 @@ inline retcode vm_run_step(struct vm *vm) {
   uint64_t instruction = dec_u64(curpos);
   uint8_t opcode = (uint8_t)(instruction >> 56);
 
-  if (opcode >= ADD && opcode <= GE) {
+  if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
     if (stack_pop(&vm->main, &right) == ERROR) {
       printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
              curpos);
@@ -160,6 +163,15 @@ inline retcode vm_run_step(struct vm *vm) {
     }
   }
 
+  if (opcode >= BULK && opcode <= INSM) {
+    if (stack_pop(&vm->mem, &aux) == ERROR) {
+      printf("error: no allocated memory, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    udata = (uint8_t *)aux;
+  }
+
   switch ((enum opcode)opcode) {
   case NOP:
     break;
@@ -172,11 +184,12 @@ inline retcode vm_run_step(struct vm *vm) {
       ;
     break;
   case PRINT_STATE:
-    printf("chaneque VM [%s]\n", vm->halted ? "stopped" : "running");
     printf("code section: %p, size: %ld, offset: %ld\n", vm->code,
            vm->code_size, vm->code_offset);
     printf("main stack:\n");
     stack_print(&vm->main);
+    printf("memory stack:\n");
+    stack_print(&vm->mem);
     break;
   case PUSH:
     aux = get_arg0(instruction, opcode);
@@ -258,8 +271,85 @@ inline retcode vm_run_step(struct vm *vm) {
     vm_jmp(vm, aux);
     stack_push(&vm->main, left);
     break;
+  case RESV:
+    aux = get_arg0(instruction, opcode);
+    udata = malloc(sizeof(uint8_t) * aux);
+    memset(udata, 0L, sizeof(uint8_t) * aux);
+    stack_push(&vm->mem, (int64_t)udata);
+    break;
+  case FREE:
+    if (stack_pop(&vm->mem, &aux) == ERROR) {
+      printf("error: no allocated memory, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+    free((uint8_t *)aux);
+    break;
+  case BULK:
+    if (((size_t)left) >= vm->code_size) {
+      printf(
+          "error: trying to copy outside of code segment, opc: %d, addr: %p\n",
+          opcode, curpos);
+      return ERROR;
+    }
+
+    if (udata == NULL) {
+      printf(
+          "error: trying to do a copy into a null pointer,  opc: %d, addr: %p",
+          opcode, curpos);
+      return ERROR;
+    }
+
+    // FIXME: SEVERE: Cannot probe that copied memory is smaller than target
+    // memory slot
+    memcpy(udata, vm->code + left, right);
+    break;
+  case LOAD: // LOAD A
+    if (udata == NULL) {
+      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
+             "%p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+
+    // udata is already fill using aux value
+    left = get_arg0(instruction, opcode);
+    right = *(udata + left);
+    if (stack_push(&vm->main, right) == ERROR) {
+      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+    break;
+  case STORE:
+    if (udata == NULL) {
+      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
+             "%p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+
+    // udata is already fill using aux value
+    left = get_arg0(instruction, opcode);
+    if (stack_pop(&vm->main, &right) == ERROR) {
+      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    *(udata + left) = right;
+    break;
+  case INSM:
+    left = get_arg0(instruction, opcode);
+    if (udata == NULL) {
+      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
+             "%p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+
+    printf("inspect: %p (%p + %ld) = %ld\n", (udata + left), udata, left,
+           *(int64_t *)(udata + left));
+    break;
   default:
-    printf("error: unrecognized or unsupported, opc: %d, addr: %p\n", opcode,
+    printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
            curpos);
     return ERROR;
   }
@@ -267,6 +357,14 @@ inline retcode vm_run_step(struct vm *vm) {
   if (opcode == PUSH || (opcode >= ADD && opcode <= NOT)) {
     if (stack_push(&vm->main, aux) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+  }
+
+  if (opcode >= BULK && opcode <= INSM) {
+    if (stack_push(&vm->mem, aux) == ERROR) {
+      printf("error: memory stack overflow, opc: %d, addr: %p\n", opcode,
+             curpos);
       return ERROR;
     }
   }
