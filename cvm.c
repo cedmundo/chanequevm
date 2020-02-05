@@ -4,123 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-inline int32_t dec_i32(uint8_t bytes[]) {
-  return bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24);
-}
-
-inline uint64_t dec_u64(uint8_t bytes[]) {
-  return ((uint64_t)bytes[0]) + ((uint64_t)bytes[1] << 8) +
-         ((uint64_t)bytes[2] << 16) + ((uint64_t)bytes[3] << 24) +
-         ((uint64_t)bytes[4] << 32) + ((uint64_t)bytes[5] << 40) +
-         ((uint64_t)bytes[6] << 48) + ((uint64_t)bytes[7] << 56);
-}
-
-void stack_init(struct stack *s, size_t cap) {
-  assert(s != NULL);
-  s->bot = malloc(sizeof(int64_t) * cap);
-  memset(s->bot, 0L, sizeof(int64_t) * cap);
-  s->cap = cap;
-  s->top = 0L;
-}
-
-void stack_free(struct stack *s) {
-  if (s->bot != NULL) {
-    free(s->bot);
-  }
-}
-
-void stack_print(struct stack *s) {
-  assert(s != NULL);
-  printf("\tcap: %ld, top: %ld, bot: %p\n", s->cap, s->top, s->bot);
-  if (s->top == 0L) {
-    printf("\t\t empty stack\n");
-    return;
-  }
-
-  for (size_t i = 0; i < s->top; i++) {
-    printf("\t\t %ld: %ld\n", i, s->bot[i]);
-  }
-}
-
-retcode stack_push(struct stack *s, int64_t v) {
-  assert(s != NULL);
-  if (s->top >= s->cap) {
-    return ERROR;
-  }
-
-  s->bot[s->top] = v;
-  s->top++;
-  return SUCCESS;
-}
-
-retcode stack_pop(struct stack *s, int64_t *v) {
-  assert(s != NULL);
-  if (s->top < 0) {
-    return ERROR;
-  }
-
-  s->top--;
-  if (v != NULL) {
-    *v = s->bot[s->top];
-  }
-
-  return SUCCESS;
-}
-
-retcode vm_init(struct vm *vm, const char *filename) {
-  assert(vm != NULL);
-  assert(filename != NULL);
-
-  stack_init(&vm->main, 32);
-  stack_init(&vm->mem, 1);
-  vm->code = NULL;
-  vm->code_size = 0L;
-  vm->code_offset = 0L;
-  vm->halted = 0;
-
-  FILE *file = fopen(filename, "rb");
-  if (file == NULL) {
-    perror("open file");
-    return ERROR;
-  }
-
-  fseek(file, 0L, SEEK_END);
-  size_t filelen = ftell(file);
-  fseek(file, 0L, SEEK_SET);
-
-  uint8_t *buffer = malloc(sizeof(uint8_t) * filelen);
-  if (fread(buffer, sizeof(uint8_t), filelen, file) != filelen) {
-    printf("error: could not read complete file!\n");
-    return ERROR;
-  }
-
-  vm->code = buffer;
-  vm->code_size = filelen;
-  fclose(file);
-  return SUCCESS;
-}
-
-void vm_free(struct vm *vm) {
-  if (vm->code != NULL) {
-    free(vm->code);
-  }
-
-  stack_free(&vm->main);
-  stack_free(&vm->mem);
-}
-
-inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
-  if (new_offset <= (vm->code_size - 8)) {
-    vm->code_offset = new_offset;
-    return SUCCESS;
-  }
-
-  printf("error: cannot jump outside from code segment, code addr: %p, offset: "
-         "%ld, new addr: %p\n",
-         vm->code, new_offset, vm->code + new_offset);
-  return ERROR;
-}
-
 inline retcode vm_run_step(struct vm *vm) {
   assert(vm != NULL);
 
@@ -130,37 +13,52 @@ inline retcode vm_run_step(struct vm *vm) {
   }
 
   int64_t aux = 0;
-  int64_t left = 0;
-  int64_t right = 0;
+  uint16_t left = 0;
+  uint16_t right = 0;
   uint8_t *udata = NULL;
+  int64_t wide_right = 0;
+  int64_t wide_left = 0;
 
   uint8_t *curpos = vm->code + vm->code_offset;
-  if (curpos > (vm->code + vm->code_size - 8)) {
+  if (curpos > (vm->code + vm->code_size - 4)) {
     printf("error: no more instructions to read\n");
     return ERROR;
   }
-  vm->code_offset += 8;
+  vm->code_offset += 4;
 
-  uint64_t instruction = dec_u64(curpos);
-  uint8_t opcode = (uint8_t)(instruction >> 56);
+  uint32_t step = decode_step(curpos);
+  uint8_t opcode = decode_opcode(step);
+  uint8_t arg0 = decode_arg0(step);
+  uint16_t arg1 = decode_arg1(step);
+
+#ifdef CVM_PSTEP
+  printf("feed: %02d %02d %02d %02d\n", curpos[0], curpos[1], curpos[2],
+         curpos[3]);
+  printf("step: opcode=%d, arg0=%d, arg1=%d\n", opcode, arg0, arg1);
+#endif
 
   if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
-    if (stack_pop(&vm->main, &right) == ERROR) {
+
+    if (stack_pop(&vm->main, &wide_right) == ERROR) {
       printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
 
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->main, &wide_left) == ERROR) {
       printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
+
+    left = (uint16_t)wide_left;
+    right = (uint16_t)wide_right;
   } else if (opcode >= NOT && opcode <= JZ) {
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->main, &wide_left) == ERROR) {
       printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
+    left = wide_left;
   }
 
   if (opcode >= BULK && opcode <= INSM) {
@@ -192,7 +90,8 @@ inline retcode vm_run_step(struct vm *vm) {
     stack_print(&vm->mem);
     break;
   case PUSH:
-    aux = get_arg0(instruction, opcode);
+    assert(arg0 == 0x00);
+    aux = arg1;
     break;
   case POP:
     stack_pop(&vm->main, &aux);
@@ -254,28 +153,29 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case JNZ:
     if (left != 0) {
-      aux = get_arg0(instruction, opcode);
-      vm_jmp(vm, aux);
+      vm_jmp(vm, arg1);
     }
     stack_push(&vm->main, left);
     break;
   case JZ:
     if (left == 0) {
-      aux = get_arg0(instruction, opcode);
-      vm_jmp(vm, aux);
+      vm_jmp(vm, arg1);
     }
     stack_push(&vm->main, left);
     break;
   case JMP:
-    aux = get_arg0(instruction, opcode);
-    vm_jmp(vm, aux);
+    vm_jmp(vm, arg1);
     stack_push(&vm->main, left);
     break;
   case RESV:
-    aux = get_arg0(instruction, opcode);
-    udata = malloc(sizeof(uint8_t) * aux);
-    memset(udata, 0L, sizeof(uint8_t) * aux);
-    stack_push(&vm->mem, (int64_t)udata);
+    udata = malloc(sizeof(uint8_t) * arg1);
+    memset(udata, 0L, sizeof(uint8_t) * arg1);
+    if (stack_push(&vm->mem, (int64_t)udata) == ERROR) {
+      free(udata);
+      printf("error: stack overflow on memory stack, opc: %d, addr: %p\n",
+             opcode, curpos);
+      return ERROR;
+    }
     break;
   case FREE:
     if (stack_pop(&vm->mem, &aux) == ERROR) {
@@ -312,7 +212,7 @@ inline retcode vm_run_step(struct vm *vm) {
     }
 
     // udata is already fill using aux value
-    left = get_arg0(instruction, opcode);
+    left = arg1;
     right = *(udata + left);
     if (stack_push(&vm->main, right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
@@ -328,16 +228,16 @@ inline retcode vm_run_step(struct vm *vm) {
     }
 
     // udata is already fill using aux value
-    left = get_arg0(instruction, opcode);
-    if (stack_pop(&vm->main, &right) == ERROR) {
+    left = arg1;
+    if (stack_pop(&vm->main, &wide_right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
 
-    *(udata + left) = right;
+    *(udata + left) = wide_right;
     break;
   case INSM:
-    left = get_arg0(instruction, opcode);
+    left = arg1;
     if (udata == NULL) {
       printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
              "%p\n",
@@ -345,7 +245,7 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    printf("inspect: %p (%p + %ld) = %ld\n", (udata + left), udata, left,
+    printf("inspect: %p (%p + %d) = %ld\n", (udata + left), udata, left,
            *(int64_t *)(udata + left));
     break;
   default:
@@ -370,6 +270,112 @@ inline retcode vm_run_step(struct vm *vm) {
   }
 
   return SUCCESS;
+}
+
+void stack_init(struct stack *s, size_t cap) {
+  assert(s != NULL);
+  s->bot = malloc(sizeof(int64_t) * cap);
+  memset(s->bot, 0L, sizeof(int64_t) * cap);
+  s->cap = cap;
+  s->top = 0L;
+}
+
+void stack_free(struct stack *s) {
+  if (s->bot != NULL) {
+    free(s->bot);
+  }
+}
+
+void stack_print(struct stack *s) {
+  assert(s != NULL);
+  printf("\tcap: %ld, top: %ld, bot: %p\n", s->cap, s->top, s->bot);
+  if (s->top == 0L) {
+    printf("\t\t empty stack\n");
+    return;
+  }
+
+  for (size_t i = 0; i < s->top; i++) {
+    printf("\t\t %ld: %ld, %lu\n", i, s->bot[i], s->bot[i]);
+  }
+}
+
+retcode stack_push(struct stack *s, int64_t v) {
+  assert(s != NULL);
+  if (s->top >= s->cap) {
+    return ERROR;
+  }
+
+  s->bot[s->top] = v;
+  s->top++;
+  return SUCCESS;
+}
+
+retcode stack_pop(struct stack *s, int64_t *v) {
+  assert(s != NULL);
+  if (s->top == 0) {
+    return ERROR;
+  }
+
+  s->top--;
+  if (v != NULL) {
+    *v = s->bot[s->top];
+  }
+
+  return SUCCESS;
+}
+
+retcode vm_init(struct vm *vm, const char *filename) {
+  assert(vm != NULL);
+  assert(filename != NULL);
+
+  stack_init(&vm->main, 32);
+  stack_init(&vm->mem, 1);
+  vm->code = NULL;
+  vm->code_size = 0L;
+  vm->code_offset = 0L;
+  vm->halted = 0;
+
+  FILE *file = fopen(filename, "rb");
+  if (file == NULL) {
+    perror("open file");
+    return ERROR;
+  }
+
+  fseek(file, 0L, SEEK_END);
+  size_t filelen = ftell(file);
+  fseek(file, 0L, SEEK_SET);
+
+  uint8_t *buffer = malloc(sizeof(uint8_t) * filelen);
+  if (fread(buffer, sizeof(uint8_t), filelen, file) != filelen) {
+    printf("error: could not read complete file!\n");
+    return ERROR;
+  }
+
+  vm->code = buffer;
+  vm->code_size = filelen;
+  fclose(file);
+  return SUCCESS;
+}
+
+void vm_free(struct vm *vm) {
+  if (vm->code != NULL) {
+    free(vm->code);
+  }
+
+  stack_free(&vm->main);
+  stack_free(&vm->mem);
+}
+
+inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
+  if (new_offset <= (vm->code_size - 4)) {
+    vm->code_offset = new_offset;
+    return SUCCESS;
+  }
+
+  printf("error: cannot jump outside from code segment, code addr: %p, offset: "
+         "%ld, new addr: %p\n",
+         vm->code, new_offset, vm->code + new_offset);
+  return ERROR;
 }
 
 retcode vm_run(struct vm *vm) {
