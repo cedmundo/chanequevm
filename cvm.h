@@ -5,8 +5,8 @@
 
 struct stack {
   int64_t *bot;
-  size_t top;
-  size_t cap;
+  int64_t top;
+  int64_t cap;
 };
 
 // this is an stack-based virtual machine

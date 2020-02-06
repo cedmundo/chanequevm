@@ -13,11 +13,9 @@ inline retcode vm_run_step(struct vm *vm) {
   }
 
   int64_t aux = 0;
-  uint16_t left = 0;
-  uint16_t right = 0;
+  int64_t left = 0;
+  int64_t right = 0;
   uint8_t *udata = NULL;
-  int64_t wide_right = 0;
-  int64_t wide_left = 0;
 
   uint8_t *curpos = vm->code + vm->code_offset;
   if (curpos > (vm->code + vm->code_size - 4)) {
@@ -38,27 +36,22 @@ inline retcode vm_run_step(struct vm *vm) {
 #endif
 
   if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
-
-    if (stack_pop(&vm->main, &wide_right) == ERROR) {
+    if (stack_pop(&vm->main, &right) == ERROR) {
       printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
 
-    if (stack_pop(&vm->main, &wide_left) == ERROR) {
+    if (stack_pop(&vm->main, &left) == ERROR) {
       printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
-
-    left = (uint16_t)wide_left;
-    right = (uint16_t)wide_right;
   } else if (opcode >= NOT && opcode <= JZ) {
-    if (stack_pop(&vm->main, &wide_left) == ERROR) {
+    if (stack_pop(&vm->main, &left) == ERROR) {
       printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
-    left = wide_left;
   }
 
   if (opcode >= BULK && opcode <= INSM) {
@@ -165,7 +158,6 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case JMP:
     vm_jmp(vm, arg1);
-    stack_push(&vm->main, left);
     break;
   case RESV:
     udata = malloc(sizeof(uint8_t) * arg1);
@@ -229,12 +221,12 @@ inline retcode vm_run_step(struct vm *vm) {
 
     // udata is already fill using aux value
     left = arg1;
-    if (stack_pop(&vm->main, &wide_right) == ERROR) {
+    if (stack_pop(&vm->main, &right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
 
-    *(udata + left) = wide_right;
+    *(udata + left) = right;
     break;
   case INSM:
     left = arg1;
@@ -245,7 +237,7 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    printf("inspect: %p (%p + %d) = %ld\n", (udata + left), udata, left,
+    printf("inspect: %p (%p + %ld) = %ld\n", (udata + left), udata, left,
            *(int64_t *)(udata + left));
     break;
   default:
@@ -277,7 +269,7 @@ void stack_init(struct stack *s, size_t cap) {
   s->bot = malloc(sizeof(int64_t) * cap);
   memset(s->bot, 0L, sizeof(int64_t) * cap);
   s->cap = cap;
-  s->top = 0L;
+  s->top = -1;
 }
 
 void stack_free(struct stack *s) {
@@ -288,14 +280,14 @@ void stack_free(struct stack *s) {
 
 void stack_print(struct stack *s) {
   assert(s != NULL);
-  printf("\tcap: %ld, top: %ld, bot: %p\n", s->cap, s->top, s->bot);
-  if (s->top == 0L) {
+  printf("\tcap: %ld, used: %ld, bot: %p\n", s->cap, s->top + 1, s->bot);
+  if (s->top < 0L) {
     printf("\t\t empty stack\n");
     return;
   }
 
-  for (size_t i = 0; i < s->top; i++) {
-    printf("\t\t %ld: %ld, %lu\n", i, s->bot[i], s->bot[i]);
+  for (int i = 0; i < s->top + 1; i++) {
+    printf("\t\t %d: %ld, %lu\n", i, s->bot[i], s->bot[i]);
   }
 }
 
@@ -305,22 +297,22 @@ retcode stack_push(struct stack *s, int64_t v) {
     return ERROR;
   }
 
-  s->bot[s->top] = v;
   s->top++;
+  s->bot[s->top] = v;
   return SUCCESS;
 }
 
 retcode stack_pop(struct stack *s, int64_t *v) {
   assert(s != NULL);
-  if (s->top == 0) {
+  if (s->top < 0) {
     return ERROR;
   }
 
-  s->top--;
   if (v != NULL) {
     *v = s->bot[s->top];
   }
 
+  s->top--;
   return SUCCESS;
 }
 
