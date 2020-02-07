@@ -14,6 +14,7 @@ struct stack {
 struct vm {
   struct stack main; // main ops stack
   struct stack mem;  // runtime allocated memory
+  struct stack call; // call stack
   int halted;
   uint8_t *code;
   size_t code_size;
@@ -53,6 +54,8 @@ enum opcode {
 
   /* Without any stack arguments */
   JMP = 0x33,
+  CALL = 0x34,
+  RET = 0x35,
 
   /* Memory stack */
   RESV = 0x40,

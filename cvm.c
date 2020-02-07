@@ -81,6 +81,8 @@ inline retcode vm_run_step(struct vm *vm) {
     stack_print(&vm->main);
     printf("memory stack:\n");
     stack_print(&vm->mem);
+    printf("call stack:\n");
+    stack_print(&vm->call);
     break;
   case PUSH:
     assert(arg0 == 0x00);
@@ -240,6 +242,37 @@ inline retcode vm_run_step(struct vm *vm) {
     printf("inspect: %p (%p + %ld) = %ld\n", (udata + left), udata, left,
            *(int64_t *)(udata + left));
     break;
+  case CALL:
+    if (stack_push(&vm->call, vm->code_offset) == ERROR) {
+      printf("error: cannot save current address to do a call, opc: %d, addr: "
+             "%p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+    if (arg0 == 0x00) {
+      // Call to a direct offset
+      vm_jmp(vm, arg1);
+    } else if (arg0 == 0x01) {
+      // Call to the stop of the stack
+      if (stack_pop(&vm->main, &aux) == ERROR) {
+        printf(
+            "error: cannot get return address from stack top, opc: %d, addr: "
+            "%p\n",
+            opcode, curpos);
+        return ERROR;
+      }
+      vm_jmp(vm, aux);
+    }
+    break;
+  case RET:
+    if (stack_pop(&vm->call, &aux) == ERROR) {
+      printf("error: cannot get return address, opc: %d, addr: "
+             "%p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+    vm_jmp(vm, aux);
+    break;
   default:
     printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
            curpos);
@@ -294,7 +327,10 @@ void stack_print(struct stack *s) {
 retcode stack_push(struct stack *s, int64_t v) {
   assert(s != NULL);
   if (s->top >= s->cap) {
-    return ERROR;
+    s->bot = realloc(s->bot, s->cap * 2);
+    if (s->bot == NULL) {
+      return ERROR;
+    }
   }
 
   s->top++;
@@ -322,6 +358,7 @@ retcode vm_init(struct vm *vm, const char *filename) {
 
   stack_init(&vm->main, 32);
   stack_init(&vm->mem, 1);
+  stack_init(&vm->call, 32);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
@@ -356,6 +393,7 @@ void vm_free(struct vm *vm) {
 
   stack_free(&vm->main);
   stack_free(&vm->mem);
+  stack_free(&vm->call);
 }
 
 inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
