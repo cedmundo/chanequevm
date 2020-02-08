@@ -3,8 +3,49 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct memchunk {
+  void *addr;
+  size_t size;
+};
+
+struct variant {
+  union {
+    uint8_t as_u8;
+    uint16_t as_u16;
+    uint32_t as_u32;
+    uint64_t as_u64;
+    int8_t as_i8;
+    int16_t as_i16;
+    int32_t as_i32;
+    int64_t as_i64;
+    float as_f32;
+    double as_f64;
+    void *as_addr;
+    size_t as_offset;
+    struct memchunk as_chunk;
+    const char *as_error;
+  };
+  enum {
+    VAR_NONE,
+    VAR_ERROR,
+    VAR_U8,
+    VAR_U16,
+    VAR_U32,
+    VAR_U64,
+    VAR_I8,
+    VAR_I16,
+    VAR_I32,
+    VAR_I64,
+    VAR_F32,
+    VAR_F64,
+    VAR_ADDR,
+    VAR_CHUNK,
+    VAR_OFFSET,
+  } type;
+};
+
 struct stack {
-  int64_t *bot;
+  struct variant *bot;
   int64_t top;
   int64_t cap;
 };
@@ -68,12 +109,29 @@ enum opcode {
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
 
+void variant_print(struct variant v);
+struct variant variant_add(struct variant left, struct variant right);
+struct variant variant_sub(struct variant left, struct variant right);
+struct variant variant_mul(struct variant left, struct variant right);
+struct variant variant_div(struct variant left, struct variant right);
+struct variant variant_mod(struct variant left, struct variant right);
+struct variant variant_xor(struct variant left, struct variant right);
+struct variant variant_and(struct variant left, struct variant right);
+struct variant variant_or(struct variant left, struct variant right);
+struct variant variant_neq(struct variant left, struct variant right);
+struct variant variant_eq(struct variant left, struct variant right);
+struct variant variant_gt(struct variant left, struct variant right);
+struct variant variant_ge(struct variant left, struct variant right);
+struct variant variant_lt(struct variant left, struct variant right);
+struct variant variant_le(struct variant left, struct variant right);
+struct variant variant_not(struct variant value);
+
 void stack_init(struct stack *s, size_t cap);
 void stack_free(struct stack *s);
 void stack_print(struct stack *s);
 
-retcode stack_push(struct stack *s, int64_t v);
-retcode stack_pop(struct stack *s, int64_t *v);
+retcode stack_push(struct stack *s, struct variant v);
+retcode stack_pop(struct stack *s, struct variant *v);
 
 retcode vm_init(struct vm *vm, const char *filename);
 void vm_free(struct vm *vm);
