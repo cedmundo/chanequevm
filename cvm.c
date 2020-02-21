@@ -237,7 +237,7 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    printf("inspect: %p (%p + %ld) = %ld\n", (udata + left), udata, left,
+    printf("inspect: %p (%p + %lld) = %lld\n", (udata + left), udata, left,
            *(int64_t *)(udata + left));
     break;
   default:
@@ -280,14 +280,28 @@ void stack_free(struct stack *s) {
 
 void stack_print(struct stack *s) {
   assert(s != NULL);
-  printf("\tcap: %ld, used: %ld, bot: %p\n", s->cap, s->top + 1, s->bot);
+  printf("\tcap: %lld, used: %lld, bot: %p\n", s->cap, s->top + 1, s->bot);
   if (s->top < 0L) {
     printf("\t\t empty stack\n");
     return;
   }
 
   for (int i = 0; i < s->top + 1; i++) {
-    printf("\t\t %d: %ld, %lu\n", i, s->bot[i], s->bot[i]);
+    int64_t cur = s->bot[i];
+    unsigned char bytes[8];
+    printf("\t\t %d: %lld, %llu", i, cur, cur);
+
+    bytes[0] = (cur >> 56) & 0xFF;
+    bytes[1] = (cur >> 48) & 0xFF;
+    bytes[2] = (cur >> 40) & 0xFF;
+    bytes[3] = (cur >> 32) & 0xFF;
+    bytes[4] = (cur >> 24) & 0xFF;
+    bytes[5] = (cur >> 16) & 0xFF;
+    bytes[6] = (cur >> 8) & 0xFF;
+    bytes[7] = cur & 0xFF;
+    printf(" [%02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX]\n",
+           bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+           bytes[7]);
   }
 }
 
