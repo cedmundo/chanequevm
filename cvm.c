@@ -13,9 +13,9 @@ inline retcode vm_run_step(struct vm *vm) {
     return ERROR;
   }
 
-  int64_t aux = 0;
-  int64_t left = 0;
-  int64_t right = 0;
+  union value aux = {0LL};
+  union value left = {0LL};
+  union value right = {0LL};
 
   uint8_t *curpos = vm->code + vm->code_offset;
   if (curpos > (vm->code + vm->code_size - 4)) {
@@ -28,12 +28,6 @@ inline retcode vm_run_step(struct vm *vm) {
   uint8_t opcode = decode_opcode(step);
   uint8_t mode = decode_arg0(step);
   uint16_t arg1 = decode_arg1(step);
-
-#ifdef CVM_PSTEP
-  printf("feed: %02hhX %02hhX %02hhX %02hhX\n", curpos[0], curpos[1], curpos[2],
-         curpos[3]);
-  printf("step: opcode=%02hhX, mode=%02hhX, arg1=%d\n", opcode, mode, arg1);
-#endif
 
   // fill left, right arguments when needed from stack
   if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
@@ -67,14 +61,14 @@ inline retcode vm_run_step(struct vm *vm) {
   if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
       (opcode >= JNZ && opcode <= JMP) || (opcode >= LOAD && opcode <= INSM)) {
     if (mode == 0x00) {
-      aux = arg1;
+      aux.u64 = arg1;
     } else if (mode == 0x01) {
       curpos = vm->code + vm->code_offset;
-      aux = decode_u32(curpos);
+      aux.u64 = decode_u32(curpos);
       vm->code_offset += 4;
     } else if (mode == 0x02) {
       curpos = vm->code + vm->code_offset;
-      aux = decode_u64(curpos);
+      aux.u64 = decode_u64(curpos);
       vm->code_offset += 8;
     } else {
       printf("error: unknown mode %d, opc: %d, addr: %p\n", mode, opcode,
@@ -82,6 +76,13 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
   }
+
+#ifdef CVM_PSTEP
+  printf("read: %02hhX %02hhX %02hhX %02hhX\n", curpos[0], curpos[1], curpos[2],
+         curpos[3]);
+  printf("run: opcode=%02hhX, mode=%02hhX, arg1=%" PRIu64 "\n", opcode, mode,
+         aux.u64);
+#endif
 
   switch ((enum opcode)opcode) {
   case NOP:
@@ -128,83 +129,111 @@ inline retcode vm_run_step(struct vm *vm) {
     stack_rot3(&vm->data);
     break;
   case ADD:
-    aux = left + right;
+    value_op(+, mode, aux, left, right);
     break;
   case SUB:
-    aux = left - right;
+    value_op(-, mode, aux, left, right);
     break;
   case MUL:
-    aux = left * right;
+    value_op(*, mode, aux, left, right);
     break;
   case DIV:
-    if (right == 0) {
+    if (right.u64 == 0LL) {
       printf("error: divide by zero, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
 
-    aux = left / right;
+    value_op(/, mode, aux, left, right);
     break;
   case MOD:
-    if (right == 0) {
+    if (right.u64 == 0LL) {
       printf("error: modulo by zero, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
 
-    aux = left % right;
+    value_op_nof(%, mode, aux, left, right);
     break;
   case AND:
-    aux = left & right;
+    value_op_nof(&, mode, aux, left, right);
     break;
   case OR:
-    aux = left | right;
+    value_op_nof(|, mode, aux, left, right);
     break;
   case XOR:
-    aux = left ^ right;
+    value_op_nof (^, mode, aux, left, right);
     break;
   case NEQ:
-    aux = left != right;
+    value_op(!=, mode, aux, left, right);
     break;
   case EQ:
-    aux = left == right;
+    value_op(==, mode, aux, left, right);
     break;
   case LT:
-    aux = left < right;
+    value_op(<, mode, aux, left, right);
     break;
   case LE:
-    aux = left <= right;
+    value_op(<=, mode, aux, left, right);
     break;
   case GT:
-    aux = left > right;
+    value_op(>, mode, aux, left, right);
     break;
   case GE:
-    aux = left >= right;
+    value_op(>=, mode, aux, left, right);
     break;
   case NOT:
-    aux = ~left;
+    switch (mode) {
+    case 0x00:
+      aux.u8 = ~left.u8;
+      break;
+    case 0x01:
+      aux.u16 = ~left.u16;
+      break;
+    case 0x02:
+      aux.u32 = ~left.u32;
+      break;
+    case 0x03:
+      aux.u64 = ~left.u64;
+      break;
+    case 0x04:
+      aux.i8 = ~left.i8;
+      break;
+    case 0x05:
+      aux.i16 = ~left.i16;
+      break;
+    case 0x06:
+      aux.i32 = ~left.i32;
+      break;
+    case 0x07:
+      aux.i64 = ~left.i64;
+      break;
+    default:
+      assert(0 && "unreachable code");
+      break;
+    }
     break;
   case JNZ:
-    if (left != 0) {
-      vm_jmp(vm, aux);
+    if (left.u64 != 0LL) {
+      vm_jmp(vm, aux.u64);
     }
     stack_push(&vm->data, left);
     break;
   case JZ:
-    if (left == 0) {
-      vm_jmp(vm, aux);
+    if (left.u64 == 0LL) {
+      vm_jmp(vm, aux.size);
     }
     stack_push(&vm->data, left);
     break;
   case JMP:
-    vm_jmp(vm, aux);
+    vm_jmp(vm, aux.size);
     break;
   case CALL:
-    if (stack_push(&vm->call, vm->code_offset) == ERROR) {
-      printf("error: cannot call %ld because call stack is overflown, opc: %d, "
+    if (stack_push(&vm->call, (union value)vm->code_offset) == ERROR) {
+      printf("error: cannot call %lu because call stack is overflown, opc: %d, "
              "addr: %p\n",
-             aux, opcode, curpos);
+             aux.size, opcode, curpos);
       return ERROR;
     }
-    vm_jmp(vm, aux);
+    vm_jmp(vm, aux.size);
     break;
   case RET:
     if (stack_pop(&vm->call, &aux) == ERROR) {
@@ -213,16 +242,16 @@ inline retcode vm_run_step(struct vm *vm) {
              opcode, curpos);
       return ERROR;
     }
-    vm_jmp(vm, aux);
+    vm_jmp(vm, aux.size);
     break;
   case RESV:
     if (vm->resv_data != NULL) {
       vm->resv_data =
-          realloc(vm->resv_data, sizeof(uint8_t) * vm->resv_size + aux);
-      vm->resv_size = vm->resv_size + aux;
+          realloc(vm->resv_data, sizeof(uint8_t) * vm->resv_size + aux.size);
+      vm->resv_size = vm->resv_size + aux.size;
     } else {
-      vm->resv_data = malloc(sizeof(uint8_t) * aux);
-      vm->resv_size = aux;
+      vm->resv_data = malloc(sizeof(uint8_t) * aux.size);
+      vm->resv_size = aux.size;
     }
     break;
   case FREE:
@@ -233,24 +262,24 @@ inline retcode vm_run_step(struct vm *vm) {
     vm->resv_size = 0L;
     break;
   case BULK:
-    if ((size_t)left >= vm->code_size) {
+    if (left.size >= vm->code_size) {
       printf("error: trying to copy byets from outside of code segment, opc: "
              "%d, addr: %p\n",
              opcode, curpos);
       return ERROR;
     }
 
-    if ((size_t)right > vm->resv_size) {
+    if (right.size > vm->resv_size) {
       printf("error: trying to copy a block bigger than allocated, opc: %d, "
              "addr: %p\n",
              opcode, curpos);
       return ERROR;
     }
 
-    memcpy(vm->resv_data + aux, vm->code + left, right);
+    memcpy(vm->resv_data + aux.size, vm->code + left.size, right.size);
     break;
   case LOAD:
-    right = *(vm->resv_data + aux);
+    right.size = *(vm->resv_data + aux.size);
     if (stack_push(&vm->data, right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
@@ -262,7 +291,7 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    *(vm->resv_data + aux) = right;
+    *(vm->resv_data + aux.size) = right.u64;
     break;
   case INSM:
     printf("============= memory inspect =============\n");
@@ -275,7 +304,7 @@ inline retcode vm_run_step(struct vm *vm) {
     printf("\n====================================\n");
     break;
   default:
-    printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
+    printf("error: unrecognized or unsupported opc: %#02x, addr: %p\n", opcode,
            curpos);
     return ERROR;
   }
@@ -292,8 +321,8 @@ inline retcode vm_run_step(struct vm *vm) {
 
 void stack_init(struct stack *s, size_t cap) {
   assert(s != NULL);
-  s->bot = malloc(sizeof(int64_t) * cap);
-  memset(s->bot, 0L, sizeof(int64_t) * cap);
+  s->bot = malloc(sizeof(union value) * cap);
+  memset(s->bot, 0L, sizeof(union value) * cap);
   s->cap = cap;
   s->top = -1;
 }
@@ -314,9 +343,10 @@ void stack_print(struct stack *s) {
   }
 
   for (int i = 0; i < s->top + 1; i++) {
-    int64_t cur = s->bot[i];
+    union value cur_val = s->bot[i];
+    uint64_t cur = cur_val.u64;
     unsigned char bytes[8];
-    printf("\t\t %d: %" PRId64 ", %" PRIu64, i, cur, cur);
+    printf("\t\t %d: %" PRIu64, i, cur);
 
     bytes[0] = (cur >> 56) & 0xFF;
     bytes[1] = (cur >> 48) & 0xFF;
@@ -332,7 +362,7 @@ void stack_print(struct stack *s) {
   }
 }
 
-retcode stack_push(struct stack *s, int64_t v) {
+retcode stack_push(struct stack *s, union value v) {
   assert(s != NULL);
   if (s->top >= s->cap) {
     return ERROR;
@@ -343,7 +373,7 @@ retcode stack_push(struct stack *s, int64_t v) {
   return SUCCESS;
 }
 
-retcode stack_pop(struct stack *s, int64_t *v) {
+retcode stack_pop(struct stack *s, union value *v) {
   assert(s != NULL);
   if (s->top < 0) {
     return ERROR;
@@ -362,8 +392,8 @@ void stack_swap(struct stack *s) {
     return;
   }
 
-  int64_t a = s->bot[s->top];
-  int64_t b = s->bot[s->top - 1];
+  union value a = s->bot[s->top];
+  union value b = s->bot[s->top - 1];
   s->bot[s->top] = b;
   s->bot[s->top - 1] = a;
 }
@@ -373,9 +403,9 @@ void stack_rot3(struct stack *s) {
     return;
   }
 
-  int64_t a = s->bot[s->top];
-  int64_t b = s->bot[s->top - 1];
-  int64_t c = s->bot[s->top - 2];
+  union value a = s->bot[s->top];
+  union value b = s->bot[s->top - 1];
+  union value c = s->bot[s->top - 2];
   s->bot[s->top] = b;
   s->bot[s->top - 1] = c;
   s->bot[s->top - 2] = a;
