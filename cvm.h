@@ -13,11 +13,12 @@ struct stack {
 //  note: for the moment we are only going to support integer operands
 struct vm {
   struct stack main; // main ops stack
-  struct stack mem;  // runtime allocated memory
   int halted;
   uint8_t *code;
   size_t code_size;
   size_t code_offset;
+  size_t resv_size;
+  uint8_t *resv_data;
 };
 
 enum opcode {
@@ -79,10 +80,17 @@ retcode vm_run(struct vm *vm);
 
 retcode vm_jmp(struct vm *vm, size_t new_offset);
 
-#define decode_step(bytes)                                                     \
+#define decode_u32(bytes)                                                      \
   (bytes[0] + ((uint32_t)bytes[1] << 8) + ((uint32_t)bytes[2] << 16) +         \
    ((uint32_t)bytes[3] << 24))
 
+#define decode_u64(bytes)                                                      \
+  (bytes[0] + ((uint64_t)bytes[1] << 8) + ((uint64_t)bytes[2] << 16) +         \
+   ((uint64_t)bytes[3] << 24)) +                                               \
+      ((uint64_t)bytes[4] << 32) + ((uint64_t)bytes[5] << 40) +                \
+      ((uint64_t)bytes[6] << 48) + ((uint64_t)bytes[7] << 56)
+
+#define decode_step(bytes) decode_u32(bytes)
 #define decode_opcode(step) (step >> 24)
 #define decode_arg0(step) ((step & 0x00FF0000) >> 16)
 #define decode_arg1(step) ((step & 0x0000FFFF))
