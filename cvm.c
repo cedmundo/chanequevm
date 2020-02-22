@@ -93,6 +93,12 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case HALT:
     vm->halted = 1;
+    if (vm->resv_data != NULL) {
+      free(vm->resv_data);
+      vm->resv_data = NULL;
+      vm->resv_size = 0L;
+    }
+
     printf("vm has been halted\n");
     break;
   case CLEAR_STACK:
