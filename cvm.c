@@ -35,41 +35,36 @@ inline retcode vm_run_step(struct vm *vm) {
   printf("step: opcode=%02hhX, mode=%02hhX, arg1=%d\n", opcode, mode, arg1);
 #endif
 
+  // fill left, right arguments when needed from stack
   if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
-    if (stack_pop(&vm->main, &right) == ERROR) {
+    if (stack_pop(&vm->data, &right) == ERROR) {
       printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
 
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->data, &left) == ERROR) {
       printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
   } else if (opcode >= NOT && opcode <= JZ) {
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->data, &left) == ERROR) {
       printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
   }
 
+  // check if there is allocated memory before bulking or inspecting
   if (opcode >= BULK && opcode <= INSM) {
     if (vm->resv_data == NULL || vm->resv_size == 0L) {
-      printf("error: no allocated memory, opc: %d, addr: %p\n", opcode, curpos);
+      printf("error: no reserved memory, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
   }
 
-  if (opcode >= BULK && opcode <= INSM) {
-    if (vm->resv_data == NULL) {
-      printf("error: cannot bulk without reserving first, opc: %d, addr: %p",
-             opcode, curpos);
-      return ERROR;
-    }
-  }
-
-  if (opcode == PUSH || opcode == RESV || opcode == BULK ||
+  // fill aux param from arg0, next 32-bits or next 64-bits depending on mode
+  if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
       (opcode >= JNZ && opcode <= JMP) || (opcode >= LOAD && opcode <= INSM)) {
     if (mode == 0x00) {
       aux = arg1;
@@ -102,29 +97,35 @@ inline retcode vm_run_step(struct vm *vm) {
     printf("vm has been halted\n");
     break;
   case CLEAR_STACK:
-    while (stack_pop(&vm->main, &aux) != ERROR)
+    while (stack_pop(&vm->data, &aux) != ERROR)
       ;
     break;
   case PRINT_STATE:
+    printf("============= vm state =============\n");
     printf("code section: %p, size: %ld, offset: %ld\n", vm->code,
            vm->code_size, vm->code_offset);
     if (vm->resv_data != NULL) {
       printf("total memory requested: %ld bytes on %p\n", vm->resv_size,
              vm->resv_data);
     }
-    printf("main stack:\n");
-    stack_print(&vm->main);
+
+    printf("data stack:\n");
+    stack_print(&vm->data);
+
+    printf("call stack:\n");
+    stack_print(&vm->call);
+    printf("\n====================================\n");
     break;
   case PUSH:
     break;
   case POP:
-    stack_pop(&vm->main, &aux);
+    stack_pop(&vm->data, &aux);
     break;
   case SWAP:
-    stack_swap(&vm->main);
+    stack_swap(&vm->data);
     break;
   case ROT3:
-    stack_rot3(&vm->main);
+    stack_rot3(&vm->data);
     break;
   case ADD:
     aux = left + right;
@@ -185,20 +186,37 @@ inline retcode vm_run_step(struct vm *vm) {
     if (left != 0) {
       vm_jmp(vm, aux);
     }
-    stack_push(&vm->main, left);
+    stack_push(&vm->data, left);
     break;
   case JZ:
     if (left == 0) {
       vm_jmp(vm, aux);
     }
-    stack_push(&vm->main, left);
+    stack_push(&vm->data, left);
     break;
   case JMP:
     vm_jmp(vm, aux);
     break;
+  case CALL:
+    if (stack_push(&vm->call, vm->code_offset) == ERROR) {
+      printf("error: cannot call %ld because call stack is overflown, opc: %d, "
+             "addr: %p\n",
+             aux, opcode, curpos);
+      return ERROR;
+    }
+    vm_jmp(vm, aux);
+    break;
+  case RET:
+    if (stack_pop(&vm->call, &aux) == ERROR) {
+      printf("error: cannot ret because call stack is empty, opc: %d, "
+             "addr: %p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+    vm_jmp(vm, aux);
+    break;
   case RESV:
     if (vm->resv_data != NULL) {
-      // TODO: Think about this
       vm->resv_data =
           realloc(vm->resv_data, sizeof(uint8_t) * vm->resv_size + aux);
       vm->resv_size = vm->resv_size + aux;
@@ -233,13 +251,13 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case LOAD:
     right = *(vm->resv_data + aux);
-    if (stack_push(&vm->main, right) == ERROR) {
+    if (stack_push(&vm->data, right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
     break;
   case STORE:
-    if (stack_pop(&vm->main, &right) == ERROR) {
+    if (stack_pop(&vm->data, &right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
@@ -254,7 +272,7 @@ inline retcode vm_run_step(struct vm *vm) {
     for (size_t i = 0; i < vm->resv_size; i++) {
       printf("%02hhX ", vm->resv_data[i]);
     }
-    printf("\n============= \n");
+    printf("\n====================================\n");
     break;
   default:
     printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
@@ -263,7 +281,7 @@ inline retcode vm_run_step(struct vm *vm) {
   }
 
   if (opcode == PUSH || (opcode >= ADD && opcode <= NOT)) {
-    if (stack_push(&vm->main, aux) == ERROR) {
+    if (stack_push(&vm->data, aux) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
@@ -367,7 +385,8 @@ retcode vm_init(struct vm *vm, const char *filename) {
   assert(vm != NULL);
   assert(filename != NULL);
 
-  stack_init(&vm->main, 32);
+  stack_init(&vm->data, 32);
+  stack_init(&vm->call, 32);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
@@ -406,7 +425,8 @@ void vm_free(struct vm *vm) {
     free(vm->resv_data);
   }
 
-  stack_free(&vm->main);
+  stack_free(&vm->data);
+  stack_free(&vm->call);
 }
 
 inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
