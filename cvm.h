@@ -28,6 +28,8 @@ enum opcode {
   PRINT_STATE = 0x03,
   PUSH = 0x04,
   POP = 0x05,
+  SWAP = 0x06,
+  ROT3 = 0x07,
 
   /* With two stack arguments */
   ADD = 0x10,
@@ -53,7 +55,7 @@ enum opcode {
   JZ = 0x32,
 
   /* Without any stack arguments */
-  JMP = 0x33,
+  JMP = 0x34,
 
   /* Memory stack */
   RESV = 0x40,
@@ -72,6 +74,8 @@ void stack_print(struct stack *s);
 
 retcode stack_push(struct stack *s, int64_t v);
 retcode stack_pop(struct stack *s, int64_t *v);
+void stack_swap(struct stack *s);
+void stack_rot3(struct stack *s);
 
 retcode vm_init(struct vm *vm, const char *filename);
 void vm_free(struct vm *vm);

@@ -120,6 +120,12 @@ inline retcode vm_run_step(struct vm *vm) {
   case POP:
     stack_pop(&vm->main, &aux);
     break;
+  case SWAP:
+    stack_swap(&vm->main);
+    break;
+  case ROT3:
+    stack_rot3(&vm->main);
+    break;
   case ADD:
     aux = left + right;
     break;
@@ -324,6 +330,30 @@ retcode stack_pop(struct stack *s, int64_t *v) {
 
   s->top--;
   return SUCCESS;
+}
+
+void stack_swap(struct stack *s) {
+  if (s->top < 1) {
+    return;
+  }
+
+  int64_t a = s->bot[s->top];
+  int64_t b = s->bot[s->top - 1];
+  s->bot[s->top] = b;
+  s->bot[s->top - 1] = a;
+}
+
+void stack_rot3(struct stack *s) {
+  if (s->top < 2) {
+    return;
+  }
+
+  int64_t a = s->bot[s->top];
+  int64_t b = s->bot[s->top - 1];
+  int64_t c = s->bot[s->top - 2];
+  s->bot[s->top] = b;
+  s->bot[s->top - 1] = c;
+  s->bot[s->top - 2] = a;
 }
 
 retcode vm_init(struct vm *vm, const char *filename) {
