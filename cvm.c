@@ -69,8 +69,8 @@ inline retcode vm_run_step(struct vm *vm) {
     }
   }
 
-  if (opcode == PUSH || opcode == RESV || (opcode >= JNZ && opcode <= JMP) ||
-      (opcode >= LOAD && opcode <= INSM)) {
+  if (opcode == PUSH || opcode == RESV || opcode == BULK ||
+      (opcode >= JNZ && opcode <= JMP) || (opcode >= LOAD && opcode <= INSM)) {
     if (mode == 0x00) {
       aux = arg1;
     } else if (mode == 0x01) {
@@ -216,13 +216,20 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case BULK:
     if ((size_t)left >= vm->code_size) {
-      printf(
-          "error: trying to copy outside of code segment, opc: %d, addr: %p\n",
-          opcode, curpos);
+      printf("error: trying to copy byets from outside of code segment, opc: "
+             "%d, addr: %p\n",
+             opcode, curpos);
       return ERROR;
     }
 
-    memcpy(vm->resv_data, vm->code + left, right);
+    if ((size_t)right > vm->resv_size) {
+      printf("error: trying to copy a block bigger than allocated, opc: %d, "
+             "addr: %p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+
+    memcpy(vm->resv_data + aux, vm->code + left, right);
     break;
   case LOAD:
     right = *(vm->resv_data + aux);
