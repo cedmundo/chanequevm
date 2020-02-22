@@ -42,7 +42,7 @@ The following table has all the supported instructions right now:
 | mul      | 0x13   | -     | -          | left, right      | left * right                    | -                                                                          |
 | mod      | 0x14   | -     | -          | left, right      | left % right                    | -                                                                          |
 | and      | 0x15   | -     | -          | left, right      | left & right                    | -                                                                          |
-| or       | 0x1A   | -     | -          | left, right      | left | right                    | -                                                                          |
+| or       | 0x1A   | -     | -          | left, right      | left (or) right                 | -                                                                          |
 | xor      | 0x1B   | -     | -          | left, right      | left ^ right                    | -                                                                          |
 | neq      | 0x1C   | -     | -          | left, right      | 1 if left != right, 0 otherwise | -                                                                          |
 | eq       | 0x1D   | -     | -          | left, right      | 1 if left == right, 0 otherwise | -                                                                          |
@@ -61,7 +61,10 @@ The following table has all the supported instructions right now:
 | store    | 0x44   | Feed  | Direct u16 | left             | -                               | Pops the stack and puts the value on the requested offset                  |
 | insm     | 0x45   | Feed  | Direct u16 | -                | -                               | Prints all the bytes on allocated memory                                   |
 
-The `Feed` mode means that the VM will read following 32-bits or 64-bits if needed: Mode 0 - No feed, arg included on instruction, Mode 1 - Feed 32 bits for arg, Mode 2 - Feed 64 bits for arg.
+The `Feed` mode means that the VM will read following 32-bits or 64-bits if needed: 
+* Mode 0 - No feed, arg included on instruction.
+* Mode 1 - Feed 32 bits for arg. 
+* Mode 2 - Feed 64 bits for arg.
 
 ## FAQ
 
