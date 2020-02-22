@@ -1,5 +1,6 @@
 #include "cvm.h"
 #include <assert.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -237,8 +238,8 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    printf("inspect: %p (%p + %lld) = %lld\n", (udata + left), udata, left,
-           *(int64_t *)(udata + left));
+    printf("inspect: %p (%p + %" PRId64 ") = %" PRId64 "\n", (udata + left),
+           udata, left, *(int64_t *)(udata + left));
     break;
   default:
     printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
@@ -280,7 +281,8 @@ void stack_free(struct stack *s) {
 
 void stack_print(struct stack *s) {
   assert(s != NULL);
-  printf("\tcap: %lld, used: %lld, bot: %p\n", s->cap, s->top + 1, s->bot);
+  printf("\tcap: %" PRId64 ", used: %" PRId64 ", bot: %p\n", s->cap, s->top + 1,
+         s->bot);
   if (s->top < 0L) {
     printf("\t\t empty stack\n");
     return;
@@ -289,7 +291,7 @@ void stack_print(struct stack *s) {
   for (int i = 0; i < s->top + 1; i++) {
     int64_t cur = s->bot[i];
     unsigned char bytes[8];
-    printf("\t\t %d: %lld, %llu", i, cur, cur);
+    printf("\t\t %d: %" PRId64 ", %" PRIu64, i, cur, cur);
 
     bytes[0] = (cur >> 56) & 0xFF;
     bytes[1] = (cur >> 48) & 0xFF;
