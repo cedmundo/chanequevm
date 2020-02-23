@@ -1,5 +1,6 @@
 #include "cvm.h"
 #include <assert.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,12 +13,9 @@ inline retcode vm_run_step(struct vm *vm) {
     return ERROR;
   }
 
-  struct variant aux = {.as_u64 = 0L, .type = VAR_NONE};
-  struct variant left = {.as_u64 = 0L, .type = VAR_NONE};
-  struct variant right = {.as_u64 = 0L, .type = VAR_NONE};
-  struct variant zero = {.as_u64 = 0L, .type = VAR_NONE};
-  struct memchunk chunk = {.addr = NULL, .size = 0L};
-  uint8_t *udata = NULL;
+  union value aux = {0LL};
+  union value left = {0LL};
+  union value right = {0LL};
 
   uint8_t *curpos = vm->code + vm->code_offset;
   if (curpos > (vm->code + vm->code_size - 4)) {
@@ -28,279 +26,292 @@ inline retcode vm_run_step(struct vm *vm) {
 
   uint32_t step = decode_step(curpos);
   uint8_t opcode = decode_opcode(step);
-  uint8_t arg0 = decode_arg0(step);
+  uint8_t mode = decode_arg0(step);
   uint16_t arg1 = decode_arg1(step);
 
-#ifdef CVM_PSTEP
-  printf("feed: %02d %02d %02d %02d\n", curpos[0], curpos[1], curpos[2],
-         curpos[3]);
-  printf("step: opcode=%d, arg0=%d, arg1=%d\n", opcode, arg0, arg1);
-#endif
-
+  // fill left, right arguments when needed from stack
   if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
-    if (stack_pop(&vm->main, &right) == ERROR) {
+    if (stack_pop(&vm->data, &right) == ERROR) {
       printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
 
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->data, &left) == ERROR) {
       printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
              curpos);
       return ERROR;
     }
   } else if (opcode >= NOT && opcode <= JZ) {
-    if (stack_pop(&vm->main, &left) == ERROR) {
+    if (stack_pop(&vm->data, &left) == ERROR) {
       printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
   }
 
+  // check if there is allocated memory before bulking or inspecting
   if (opcode >= BULK && opcode <= INSM) {
-    if (stack_pop(&vm->mem, &aux) == ERROR) {
-      printf("error: no allocated memory, opc: %d, addr: %p\n", opcode, curpos);
+    if (vm->resv_data == NULL || vm->resv_size == 0L) {
+      printf("error: no reserved memory, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
-
-    udata = aux.as_addr;
   }
+
+  // fill aux param from arg0, next 32-bits or next 64-bits depending on mode
+  if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
+      (opcode >= JNZ && opcode <= JMP) || (opcode >= LOAD && opcode <= INSM)) {
+    if (mode == 0x00) {
+      aux.u64 = arg1;
+    } else if (mode == 0x01) {
+      curpos = vm->code + vm->code_offset;
+      aux.u64 = decode_u32(curpos);
+      vm->code_offset += 4;
+    } else if (mode == 0x02) {
+      curpos = vm->code + vm->code_offset;
+      aux.u64 = decode_u64(curpos);
+      vm->code_offset += 8;
+    } else {
+      printf("error: unknown mode %d, opc: %d, addr: %p\n", mode, opcode,
+             curpos);
+      return ERROR;
+    }
+  }
+
+#ifdef CVM_PSTEP
+  printf("read: %02hhX %02hhX %02hhX %02hhX\n", curpos[0], curpos[1], curpos[2],
+         curpos[3]);
+  printf("run: opcode=%02hhX, mode=%02hhX, arg1=%" PRIu64 "\n", opcode, mode,
+         aux.u64);
+#endif
 
   switch ((enum opcode)opcode) {
   case NOP:
     break;
   case HALT:
     vm->halted = 1;
+    if (vm->resv_data != NULL) {
+      free(vm->resv_data);
+      vm->resv_data = NULL;
+      vm->resv_size = 0L;
+    }
+
     printf("vm has been halted\n");
     break;
   case CLEAR_STACK:
-    while (stack_pop(&vm->main, &aux) != ERROR)
+    while (stack_pop(&vm->data, &aux) != ERROR)
       ;
     break;
   case PRINT_STATE:
+    printf("============= vm state =============\n");
     printf("code section: %p, size: %ld, offset: %ld\n", vm->code,
            vm->code_size, vm->code_offset);
-    printf("main stack:\n");
-    stack_print(&vm->main);
-    printf("memory stack:\n");
-    stack_print(&vm->mem);
+    if (vm->resv_data != NULL) {
+      printf("total memory requested: %ld bytes on %p\n", vm->resv_size,
+             vm->resv_data);
+    }
+
+    printf("data stack:\n");
+    stack_print(&vm->data);
+
     printf("call stack:\n");
     stack_print(&vm->call);
+    printf("\n====================================\n");
     break;
   case PUSH:
-    assert(arg0 == 0x00);
-    aux.as_u16 = arg1;
-    aux.type = VAR_U16;
     break;
   case POP:
-    stack_pop(&vm->main, &aux);
+    stack_pop(&vm->data, &aux);
+    break;
+  case SWAP:
+    stack_swap(&vm->data);
+    break;
+  case ROT3:
+    stack_rot3(&vm->data);
     break;
   case ADD:
-    aux = variant_add(left, right);
+    value_op(+, mode, aux, left, right);
     break;
   case SUB:
-    aux = variant_sub(left, right);
+    value_op(-, mode, aux, left, right);
     break;
   case MUL:
-    aux = variant_mul(left, right);
+    value_op(*, mode, aux, left, right);
     break;
   case DIV:
-    aux = variant_div(left, right);
+    if (right.u64 == 0LL) {
+      printf("error: divide by zero, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    value_op(/, mode, aux, left, right);
     break;
   case MOD:
-    aux = variant_mod(left, right);
+    if (right.u64 == 0LL) {
+      printf("error: modulo by zero, opc: %d, addr: %p\n", opcode, curpos);
+      return ERROR;
+    }
+
+    value_op_nof(%, mode, aux, left, right);
     break;
   case AND:
-    aux = variant_and(left, right);
+    value_op_nof(&, mode, aux, left, right);
     break;
   case OR:
-    aux = variant_or(left, right);
+    value_op_nof(|, mode, aux, left, right);
     break;
   case XOR:
-    aux = variant_xor(left, right);
+    value_op_nof (^, mode, aux, left, right);
     break;
   case NEQ:
-    aux = variant_neq(left, right);
+    value_op(!=, mode, aux, left, right);
     break;
   case EQ:
-    aux = variant_eq(left, right);
+    value_op(==, mode, aux, left, right);
     break;
   case LT:
-    aux = variant_lt(left, right);
+    value_op(<, mode, aux, left, right);
     break;
   case LE:
-    aux = variant_le(left, right);
+    value_op(<=, mode, aux, left, right);
     break;
   case GT:
-    aux = variant_gt(left, right);
+    value_op(>, mode, aux, left, right);
     break;
   case GE:
-    aux = variant_ge(left, right);
+    value_op(>=, mode, aux, left, right);
     break;
   case NOT:
-    aux = variant_not(left);
+    switch (mode) {
+    case 0x00:
+      aux.u8 = ~left.u8;
+      break;
+    case 0x01:
+      aux.u16 = ~left.u16;
+      break;
+    case 0x02:
+      aux.u32 = ~left.u32;
+      break;
+    case 0x03:
+      aux.u64 = ~left.u64;
+      break;
+    case 0x04:
+      aux.i8 = ~left.i8;
+      break;
+    case 0x05:
+      aux.i16 = ~left.i16;
+      break;
+    case 0x06:
+      aux.i32 = ~left.i32;
+      break;
+    case 0x07:
+      aux.i64 = ~left.i64;
+      break;
+    default:
+      assert(0 && "unreachable code");
+      break;
+    }
     break;
   case JNZ:
-    if (variant_neq(left, zero).as_u64) {
-      vm_jmp(vm, arg1);
+    if (left.u64 != 0LL) {
+      vm_jmp(vm, aux.u64);
     }
-    stack_push(&vm->main, left);
+    stack_push(&vm->data, left);
     break;
   case JZ:
-    if (variant_eq(left, zero).as_u64) {
-      vm_jmp(vm, arg1);
+    if (left.u64 == 0LL) {
+      vm_jmp(vm, aux.size);
     }
-    stack_push(&vm->main, left);
+    stack_push(&vm->data, left);
     break;
   case JMP:
-    vm_jmp(vm, arg1);
+    vm_jmp(vm, aux.size);
     break;
-  case RESV:
-    udata = malloc(sizeof(uint8_t) * arg1);
-    memset(udata, 0L, sizeof(uint8_t) * arg1);
-    chunk.addr = udata;
-    chunk.size = sizeof(uint8_t) * arg1;
-    aux.as_chunk = chunk;
-    aux.type = VAR_CHUNK;
-    if (stack_push(&vm->mem, aux) == ERROR) {
-      free(udata);
-      printf("error: stack overflow on memory stack, opc: %d, addr: %p\n",
+  case CALL:
+    if (stack_push(&vm->call, (union value)vm->code_offset) == ERROR) {
+      printf("error: cannot call %lu because call stack is overflown, opc: %d, "
+             "addr: %p\n",
+             aux.size, opcode, curpos);
+      return ERROR;
+    }
+    vm_jmp(vm, aux.size);
+    break;
+  case RET:
+    if (stack_pop(&vm->call, &aux) == ERROR) {
+      printf("error: cannot ret because call stack is empty, opc: %d, "
+             "addr: %p\n",
              opcode, curpos);
       return ERROR;
+    }
+    vm_jmp(vm, aux.size);
+    break;
+  case RESV:
+    if (vm->resv_data != NULL) {
+      vm->resv_data =
+          realloc(vm->resv_data, sizeof(uint8_t) * vm->resv_size + aux.size);
+      vm->resv_size = vm->resv_size + aux.size;
+    } else {
+      vm->resv_data = malloc(sizeof(uint8_t) * aux.size);
+      vm->resv_size = aux.size;
     }
     break;
   case FREE:
-    if (stack_pop(&vm->mem, &aux) == ERROR) {
-      printf("error: no allocated memory, opc: %d, addr: %p\n", opcode, curpos);
-      return ERROR;
+    if (vm->resv_data != NULL) {
+      free(vm->resv_data);
     }
-    if (aux.type != VAR_CHUNK) {
-      printf("error: trying to free a type other than a chunk, opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
-    }
-
-    free(aux.as_chunk.addr);
+    vm->resv_data = NULL;
+    vm->resv_size = 0L;
     break;
   case BULK:
-    if (left.as_offset >= vm->code_size) {
-      printf(
-          "error: trying to copy outside of code segment, opc: %d, addr: %p\n",
-          opcode, curpos);
-      return ERROR;
-    }
-
-    if (udata == NULL) {
-      printf(
-          "error: trying to do a copy into a null pointer, opc: %d, addr: %p",
-          opcode, curpos);
-      return ERROR;
-    }
-
-    if (right.as_offset > aux.as_chunk.size) {
-      printf("error: trying to do a copy a buffer greater than allocated, opc: "
-             "%d, addr: %p",
+    if (left.size >= vm->code_size) {
+      printf("error: trying to copy byets from outside of code segment, opc: "
+             "%d, addr: %p\n",
              opcode, curpos);
       return ERROR;
     }
 
-    memcpy(udata, vm->code + left.as_offset, right.as_offset);
+    if (right.size > vm->resv_size) {
+      printf("error: trying to copy a block bigger than allocated, opc: %d, "
+             "addr: %p\n",
+             opcode, curpos);
+      return ERROR;
+    }
+
+    memcpy(vm->resv_data + aux.size, vm->code + left.size, right.size);
     break;
   case LOAD:
-    // LOAD [TYPE] [OFFSET WITHIN MEMORY]
-    if (udata == NULL) {
-      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
-    }
-    assert(0 && "load is not supported yet (variants will break it)");
-    assert(arg0 == 0x00 && "only 16-bit offsets are supported");
-
-    right = *((struct variant *)udata + arg1);
-    if (stack_push(&vm->main, right) == ERROR) {
+    right.size = *(vm->resv_data + aux.size);
+    if (stack_push(&vm->data, right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
     break;
   case STORE:
-    // STORE [TYPE] [OFFSET WITHIN MEMORY]
-    if (udata == NULL) {
-      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
-    }
-
-    assert(0 && "store is not supported yet (variants will break it)");
-    if (stack_pop(&vm->main, &right) == ERROR) {
+    if (stack_pop(&vm->data, &right) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
       return ERROR;
     }
 
-    *((struct variant *)udata + arg1) = right;
+    *(vm->resv_data + aux.size) = right.u64;
     break;
   case INSM:
-    if (udata == NULL) {
-      printf("error: trying to do a copy from a null pointer,  opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
+    printf("============= memory inspect =============\n");
+    printf("%ld bytes of memory on "
+           "%p: \n",
+           vm->resv_size, vm->resv_data);
+    for (size_t i = 0; i < vm->resv_size; i++) {
+      printf("%02hhX ", vm->resv_data[i]);
     }
-
-    printf("inspect: %p (%p + %d) = ", (udata + arg1), udata, arg1);
-    variant_print(*((struct variant *)udata + arg1));
-    break;
-  case CALL:
-    left.type = VAR_OFFSET;
-    left.as_offset = vm->code_offset;
-    if (stack_push(&vm->call, left) == ERROR) {
-      printf("error: cannot save current address to do a call, opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
-    }
-    if (arg0 == 0x00) {
-      // Call to a direct offset
-      vm_jmp(vm, arg1);
-    } else if (arg0 == 0x01) {
-      // Call to the stop of the stack
-      if (stack_pop(&vm->main, &aux) == ERROR) {
-        printf(
-            "error: cannot get return address from stack top, opc: %d, addr: "
-            "%p\n",
-            opcode, curpos);
-        return ERROR;
-      }
-      vm_jmp(vm, aux.as_offset);
-    }
-    break;
-  case RET:
-    if (stack_pop(&vm->call, &aux) == ERROR) {
-      printf("error: cannot get return address, opc: %d, addr: "
-             "%p\n",
-             opcode, curpos);
-      return ERROR;
-    }
-    vm_jmp(vm, aux.as_offset);
+    printf("\n====================================\n");
     break;
   default:
-    printf("error: unrecognized or unsupported, opc: %#08x, addr: %p\n", opcode,
+    printf("error: unrecognized or unsupported opc: %#02x, addr: %p\n", opcode,
            curpos);
     return ERROR;
   }
 
   if (opcode == PUSH || (opcode >= ADD && opcode <= NOT)) {
-    if (stack_push(&vm->main, aux) == ERROR) {
+    if (stack_push(&vm->data, aux) == ERROR) {
       printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
-      return ERROR;
-    }
-  }
-
-  if (opcode >= BULK && opcode <= INSM) {
-    if (stack_push(&vm->mem, aux) == ERROR) {
-      printf("error: memory stack overflow, opc: %d, addr: %p\n", opcode,
-             curpos);
       return ERROR;
     }
   }
@@ -310,8 +321,8 @@ inline retcode vm_run_step(struct vm *vm) {
 
 void stack_init(struct stack *s, size_t cap) {
   assert(s != NULL);
-  s->bot = malloc(sizeof(struct variant) * cap);
-  memset(s->bot, 0L, sizeof(struct variant) * cap);
+  s->bot = malloc(sizeof(union value) * cap);
+  memset(s->bot, 0L, sizeof(union value) * cap);
   s->cap = cap;
   s->top = -1;
 }
@@ -324,317 +335,37 @@ void stack_free(struct stack *s) {
 
 void stack_print(struct stack *s) {
   assert(s != NULL);
-  printf("\tcap: %ld, used: %ld, bot: %p\n", s->cap, s->top + 1, s->bot);
+  printf("\tcap: %" PRId64 ", used: %" PRId64 ", bot: %p\n", s->cap, s->top + 1,
+         s->bot);
   if (s->top < 0L) {
     printf("\t\t empty stack\n");
     return;
   }
 
   for (int i = 0; i < s->top + 1; i++) {
-    printf("\t\t %d: ", i + 1);
-    variant_print(s->bot[i]);
+    union value cur_val = s->bot[i];
+    uint64_t cur = cur_val.u64;
+    unsigned char bytes[8];
+    printf("\t\t %d: %" PRIu64, i, cur);
+
+    bytes[0] = (cur >> 56) & 0xFF;
+    bytes[1] = (cur >> 48) & 0xFF;
+    bytes[2] = (cur >> 40) & 0xFF;
+    bytes[3] = (cur >> 32) & 0xFF;
+    bytes[4] = (cur >> 24) & 0xFF;
+    bytes[5] = (cur >> 16) & 0xFF;
+    bytes[6] = (cur >> 8) & 0xFF;
+    bytes[7] = cur & 0xFF;
+    printf(" [%02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX %02hhX]\n",
+           bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6],
+           bytes[7]);
   }
 }
 
-void variant_print(struct variant v) {
-  switch (v.type) {
-  case VAR_NONE:
-    printf("[none]\n");
-    break;
-  case VAR_ERROR:
-    printf("[error] %s\n", v.as_error);
-    break;
-  case VAR_U8:
-    printf("[u8] %u\n", v.as_u8);
-    break;
-  case VAR_U16:
-    printf("[u16] %u\n", v.as_u16);
-    break;
-  case VAR_U32:
-    printf("[u32] %u\n", v.as_u32);
-    break;
-  case VAR_U64:
-    printf("[u64] %lu\n", v.as_u64);
-    break;
-  case VAR_I8:
-    printf("[i8] %d\n", v.as_i8);
-    break;
-  case VAR_I16:
-    printf("[i16] %d\n", v.as_i16);
-    break;
-  case VAR_I32:
-    printf("[i32] %d\n", v.as_i32);
-    break;
-  case VAR_I64:
-    printf("[i64] %ld\n", v.as_i64);
-    break;
-  case VAR_F32:
-    printf("[f32] %0.4f\n", v.as_f32);
-    break;
-  case VAR_F64:
-    printf("[f64] %0.4lf\n", v.as_f64);
-    break;
-  case VAR_ADDR:
-    printf("[addr] 0x%p\n", v.as_addr);
-    break;
-  case VAR_CHUNK:
-    printf("[chunk] 0x%p (%ld bytes)\n", v.as_chunk.addr, v.as_chunk.size);
-    break;
-  case VAR_OFFSET:
-    printf("[offset] %ld\n", v.as_offset);
-    break;
-  default:
-    printf("[unknown type]\n");
-    break;
-  }
-}
-
-struct variant variant_add(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == right.type && left.type == VAR_F32) {
-    res.as_f32 = left.as_f32 + right.as_f32;
-    res.type = VAR_F32;
-  } else if (left.type == right.type && left.type == VAR_F64) {
-    res.as_f64 = left.as_f64 + right.as_f64;
-    res.type = VAR_F64;
-  } else if (left.type == VAR_CHUNK || right.type == VAR_CHUNK) {
-    printf("error: incompatible add operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible add operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 + right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_sub(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == right.type && left.type == VAR_F32) {
-    res.as_f32 = left.as_f32 - right.as_f32;
-    res.type = VAR_F32;
-  } else if (left.type == right.type && left.type == VAR_F64) {
-    res.as_f64 = left.as_f64 - right.as_f64;
-    res.type = VAR_F64;
-  } else if (left.type == VAR_CHUNK || right.type == VAR_CHUNK) {
-    printf("error: incompatible sub operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible sub operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 - right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_mul(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == right.type && left.type == VAR_F32) {
-    res.as_f32 = left.as_f32 * right.as_f32;
-    res.type = VAR_F32;
-  } else if (left.type == right.type && left.type == VAR_F64) {
-    res.as_f64 = left.as_f64 * right.as_f64;
-    res.type = VAR_F64;
-  } else if (left.type == VAR_CHUNK || right.type == VAR_CHUNK) {
-    printf("error: incompatible mul operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mul operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 * right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_div(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == right.type && left.type == VAR_F32) {
-    res.as_f32 = left.as_f32 / right.as_f32;
-    res.type = VAR_F32;
-  } else if (left.type == right.type && left.type == VAR_F64) {
-    res.as_f64 = left.as_f64 / right.as_f64;
-    res.type = VAR_F64;
-  } else if (left.type == VAR_CHUNK || right.type == VAR_CHUNK) {
-    printf("error: incompatible div operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible div operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 / right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_mod(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 % right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_xor(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 ^ right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_and(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 & right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_or(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 | right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_neq(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 != right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_eq(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 == right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_gt(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 > right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_ge(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 >= right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_lt(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 < right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_le(struct variant left, struct variant right) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || right.type == VAR_CHUNK ||
-      right.type == VAR_F32 || right.type == VAR_F64 || left.type == VAR_F32 ||
-      left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = left.as_u64 <= right.as_u64;
-  }
-  return res;
-}
-
-struct variant variant_not(struct variant left) {
-  struct variant res;
-  if (left.type == VAR_CHUNK || left.type == VAR_F32 || left.type == VAR_F64) {
-    printf("error: incompatible mod operands\n");
-    res.type = VAR_ERROR;
-    res.as_error = "incompatible mod operands";
-  } else {
-    res.type = left.type;
-    res.as_u64 = ~left.as_u64;
-  }
-  return res;
-}
-
-retcode stack_push(struct stack *s, struct variant v) {
+retcode stack_push(struct stack *s, union value v) {
   assert(s != NULL);
   if (s->top >= s->cap) {
-    s->bot = realloc(s->bot, s->cap * 2);
-    if (s->bot == NULL) {
-      return ERROR;
-    }
+    return ERROR;
   }
 
   s->top++;
@@ -642,7 +373,7 @@ retcode stack_push(struct stack *s, struct variant v) {
   return SUCCESS;
 }
 
-retcode stack_pop(struct stack *s, struct variant *v) {
+retcode stack_pop(struct stack *s, union value *v) {
   assert(s != NULL);
   if (s->top < 0) {
     return ERROR;
@@ -656,17 +387,42 @@ retcode stack_pop(struct stack *s, struct variant *v) {
   return SUCCESS;
 }
 
+void stack_swap(struct stack *s) {
+  if (s->top < 1) {
+    return;
+  }
+
+  union value a = s->bot[s->top];
+  union value b = s->bot[s->top - 1];
+  s->bot[s->top] = b;
+  s->bot[s->top - 1] = a;
+}
+
+void stack_rot3(struct stack *s) {
+  if (s->top < 2) {
+    return;
+  }
+
+  union value a = s->bot[s->top];
+  union value b = s->bot[s->top - 1];
+  union value c = s->bot[s->top - 2];
+  s->bot[s->top] = b;
+  s->bot[s->top - 1] = c;
+  s->bot[s->top - 2] = a;
+}
+
 retcode vm_init(struct vm *vm, const char *filename) {
   assert(vm != NULL);
   assert(filename != NULL);
 
-  stack_init(&vm->main, 32);
-  stack_init(&vm->mem, 1);
+  stack_init(&vm->data, 32);
   stack_init(&vm->call, 32);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
   vm->halted = 0;
+  vm->resv_size = 0L;
+  vm->resv_data = NULL;
 
   FILE *file = fopen(filename, "rb");
   if (file == NULL) {
@@ -695,8 +451,11 @@ void vm_free(struct vm *vm) {
     free(vm->code);
   }
 
-  stack_free(&vm->main);
-  stack_free(&vm->mem);
+  if (vm->resv_data != NULL) {
+    free(vm->resv_data);
+  }
+
+  stack_free(&vm->data);
   stack_free(&vm->call);
 }
 

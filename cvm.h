@@ -3,63 +3,35 @@
 #include <stddef.h>
 #include <stdint.h>
 
-struct memchunk {
-  void *addr;
+union value {
+  uint8_t u8;
+  uint16_t u16;
+  uint32_t u32;
+  uint64_t u64;
+  int8_t i8;
+  int16_t i16;
+  int32_t i32;
+  int64_t i64;
+  float f32;
+  double f64;
   size_t size;
 };
 
-struct variant {
-  union {
-    uint8_t as_u8;
-    uint16_t as_u16;
-    uint32_t as_u32;
-    uint64_t as_u64;
-    int8_t as_i8;
-    int16_t as_i16;
-    int32_t as_i32;
-    int64_t as_i64;
-    float as_f32;
-    double as_f64;
-    void *as_addr;
-    size_t as_offset;
-    struct memchunk as_chunk;
-    const char *as_error;
-  };
-  enum {
-    VAR_NONE,
-    VAR_ERROR,
-    VAR_U8,
-    VAR_U16,
-    VAR_U32,
-    VAR_U64,
-    VAR_I8,
-    VAR_I16,
-    VAR_I32,
-    VAR_I64,
-    VAR_F32,
-    VAR_F64,
-    VAR_ADDR,
-    VAR_CHUNK,
-    VAR_OFFSET,
-  } type;
-};
-
 struct stack {
-  struct variant *bot;
+  union value *bot;
   int64_t top;
   int64_t cap;
 };
 
-// this is an stack-based virtual machine
-//  note: for the moment we are only going to support integer operands
 struct vm {
-  struct stack main; // main ops stack
-  struct stack mem;  // runtime allocated memory
-  struct stack call; // call stack
+  struct stack data; // data stack, main operation source
+  struct stack call; // call stack, where return addresses are stored
   int halted;
   uint8_t *code;
   size_t code_size;
   size_t code_offset;
+  size_t resv_size;
+  uint8_t *resv_data;
 };
 
 enum opcode {
@@ -69,6 +41,8 @@ enum opcode {
   PRINT_STATE = 0x03,
   PUSH = 0x04,
   POP = 0x05,
+  SWAP = 0x06,
+  ROT3 = 0x07,
 
   /* With two stack arguments */
   ADD = 0x10,
@@ -95,8 +69,8 @@ enum opcode {
 
   /* Without any stack arguments */
   JMP = 0x33,
-  CALL = 0x34,
-  RET = 0x35,
+  CALL = 0x35,
+  RET = 0x36,
 
   /* Memory stack */
   RESV = 0x40,
@@ -109,29 +83,14 @@ enum opcode {
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
 
-void variant_print(struct variant v);
-struct variant variant_add(struct variant left, struct variant right);
-struct variant variant_sub(struct variant left, struct variant right);
-struct variant variant_mul(struct variant left, struct variant right);
-struct variant variant_div(struct variant left, struct variant right);
-struct variant variant_mod(struct variant left, struct variant right);
-struct variant variant_xor(struct variant left, struct variant right);
-struct variant variant_and(struct variant left, struct variant right);
-struct variant variant_or(struct variant left, struct variant right);
-struct variant variant_neq(struct variant left, struct variant right);
-struct variant variant_eq(struct variant left, struct variant right);
-struct variant variant_gt(struct variant left, struct variant right);
-struct variant variant_ge(struct variant left, struct variant right);
-struct variant variant_lt(struct variant left, struct variant right);
-struct variant variant_le(struct variant left, struct variant right);
-struct variant variant_not(struct variant value);
-
 void stack_init(struct stack *s, size_t cap);
 void stack_free(struct stack *s);
 void stack_print(struct stack *s);
 
-retcode stack_push(struct stack *s, struct variant v);
-retcode stack_pop(struct stack *s, struct variant *v);
+retcode stack_push(struct stack *s, union value v);
+retcode stack_pop(struct stack *s, union value *v);
+void stack_swap(struct stack *s);
+void stack_rot3(struct stack *s);
 
 retcode vm_init(struct vm *vm, const char *filename);
 void vm_free(struct vm *vm);
@@ -140,12 +99,91 @@ retcode vm_run(struct vm *vm);
 
 retcode vm_jmp(struct vm *vm, size_t new_offset);
 
-#define decode_step(bytes)                                                     \
+#define decode_u32(bytes)                                                      \
   (bytes[0] + ((uint32_t)bytes[1] << 8) + ((uint32_t)bytes[2] << 16) +         \
    ((uint32_t)bytes[3] << 24))
 
+#define decode_u64(bytes)                                                      \
+  (bytes[0] + ((uint64_t)bytes[1] << 8) + ((uint64_t)bytes[2] << 16) +         \
+   ((uint64_t)bytes[3] << 24)) +                                               \
+      ((uint64_t)bytes[4] << 32) + ((uint64_t)bytes[5] << 40) +                \
+      ((uint64_t)bytes[6] << 48) + ((uint64_t)bytes[7] << 56)
+
+#define decode_step(bytes) decode_u32(bytes)
 #define decode_opcode(step) (step >> 24)
 #define decode_arg0(step) ((step & 0x00FF0000) >> 16)
 #define decode_arg1(step) ((step & 0x0000FFFF))
+
+#define value_op(op, mode, aux, left, right)                                   \
+  do {                                                                         \
+    switch (mode) {                                                            \
+    case 0x00:                                                                 \
+      aux.u8 = left.u8 op right.u8;                                            \
+      break;                                                                   \
+    case 0x01:                                                                 \
+      aux.u16 = left.u16 op right.u16;                                         \
+      break;                                                                   \
+    case 0x02:                                                                 \
+      aux.u32 = left.u32 op right.u32;                                         \
+      break;                                                                   \
+    case 0x03:                                                                 \
+      aux.u64 = left.u64 op right.u64;                                         \
+      break;                                                                   \
+    case 0x04:                                                                 \
+      aux.i8 = left.i8 op right.i8;                                            \
+      break;                                                                   \
+    case 0x05:                                                                 \
+      aux.i16 = left.i16 op right.i16;                                         \
+      break;                                                                   \
+    case 0x06:                                                                 \
+      aux.i32 = left.i32 op right.i32;                                         \
+      break;                                                                   \
+    case 0x07:                                                                 \
+      aux.i64 = left.i64 op right.i64;                                         \
+      break;                                                                   \
+    case 0x08:                                                                 \
+      aux.f32 = left.f32 op right.f32;                                         \
+      break;                                                                   \
+    case 0x09:                                                                 \
+      aux.f64 = left.f64 op right.f64;                                         \
+      break;                                                                   \
+    default:                                                                   \
+      assert(0 && "unreachable code");                                         \
+      break;                                                                   \
+    }                                                                          \
+  } while (0);
+
+#define value_op_nof(op, mode, aux, left, right)                               \
+  do {                                                                         \
+    switch (mode) {                                                            \
+    case 0x00:                                                                 \
+      aux.u8 = left.u8 op right.u8;                                            \
+      break;                                                                   \
+    case 0x01:                                                                 \
+      aux.u16 = left.u16 op right.u16;                                         \
+      break;                                                                   \
+    case 0x02:                                                                 \
+      aux.u32 = left.u32 op right.u32;                                         \
+      break;                                                                   \
+    case 0x03:                                                                 \
+      aux.u64 = left.u64 op right.u64;                                         \
+      break;                                                                   \
+    case 0x04:                                                                 \
+      aux.i8 = left.i8 op right.i8;                                            \
+      break;                                                                   \
+    case 0x05:                                                                 \
+      aux.i16 = left.i16 op right.i16;                                         \
+      break;                                                                   \
+    case 0x06:                                                                 \
+      aux.i32 = left.i32 op right.i32;                                         \
+      break;                                                                   \
+    case 0x07:                                                                 \
+      aux.i64 = left.i64 op right.i64;                                         \
+      break;                                                                   \
+    default:                                                                   \
+      assert(0 && "unreachable code");                                         \
+      break;                                                                   \
+    }                                                                          \
+  } while (0);
 
 #endif /* CVM_H */
