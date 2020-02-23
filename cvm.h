@@ -1,5 +1,6 @@
 #ifndef CVM_H
 #define CVM_H
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,6 +16,7 @@ union value {
   float f32;
   double f64;
   size_t size;
+  char *data;
 };
 
 struct stack {
@@ -32,6 +34,10 @@ struct vm {
   size_t code_offset;
   size_t resv_size;
   uint8_t *resv_data;
+  size_t error_handler;
+  char *error_message;
+  int should_free_error;
+  int error_code;
 };
 
 enum opcode {
@@ -79,6 +85,11 @@ enum opcode {
   LOAD = 0x43,
   STORE = 0x44,
   INSM = 0x45,
+
+  /* Error handling */
+  SETHDLR = 0x50,
+  SETERR = 0x51,
+  CLRERR = 0x52,
 };
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
@@ -94,11 +105,13 @@ void stack_rot3(struct stack *s);
 
 retcode vm_init(struct vm *vm, const char *filename);
 void vm_free(struct vm *vm);
+void vm_set_error(struct vm *vm, int error_code, const char *user_format, ...);
 retcode vm_run_step(struct vm *vm);
 retcode vm_run(struct vm *vm);
 
 retcode vm_jmp(struct vm *vm, size_t new_offset);
 
+#define MAX_ERROR_MESSAGE_LEN 255
 #define decode_u32(bytes)                                                      \
   (bytes[0] + ((uint32_t)bytes[1] << 8) + ((uint32_t)bytes[2] << 16) +         \
    ((uint32_t)bytes[3] << 24))

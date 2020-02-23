@@ -1,6 +1,7 @@
 #include "cvm.h"
 #include <assert.h>
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +10,7 @@ inline retcode vm_run_step(struct vm *vm) {
   assert(vm != NULL);
 
   if (vm->halted) {
-    printf("error: halted vm\n");
+    fprintf(stderr, "error: already halted vm\n");
     return ERROR;
   }
 
@@ -19,7 +20,8 @@ inline retcode vm_run_step(struct vm *vm) {
 
   uint8_t *curpos = vm->code + vm->code_offset;
   if (curpos > (vm->code + vm->code_size - 4)) {
-    printf("error: no more instructions to read\n");
+    fprintf(stderr, "error: no more instructions to read\n");
+    vm->halted = 1;
     return ERROR;
   }
   vm->code_offset += 4;
@@ -30,21 +32,28 @@ inline retcode vm_run_step(struct vm *vm) {
   uint16_t arg1 = decode_arg1(step);
 
   // fill left, right arguments when needed from stack
-  if ((opcode >= ADD && opcode <= GE) || opcode == BULK) {
+  if ((opcode >= ADD && opcode <= GE) || opcode == BULK || opcode == SETERR) {
     if (stack_pop(&vm->data, &right) == ERROR) {
-      printf("error: missing right parameter, opc: %d, addr: %p\n", opcode,
-             curpos);
+      vm_set_error(vm, 0x10,
+                   "missing stack right parameter (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
     if (stack_pop(&vm->data, &left) == ERROR) {
-      printf("error: missing left parameter, opc: %d, addr: %p\n", opcode,
-             curpos);
+      vm_set_error(vm, 0x10,
+                   "missing stack left parameter (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
   } else if (opcode >= NOT && opcode <= JZ) {
     if (stack_pop(&vm->data, &left) == ERROR) {
-      printf("error: missing parameter, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x11,
+                   "missing stack parameter (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
   }
@@ -52,14 +61,18 @@ inline retcode vm_run_step(struct vm *vm) {
   // check if there is allocated memory before bulking or inspecting
   if (opcode >= BULK && opcode <= INSM) {
     if (vm->resv_data == NULL || vm->resv_size == 0L) {
-      printf("error: no reserved memory, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x12,
+                   "no previously reserved memory (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
   }
 
   // fill aux param from arg0, next 32-bits or next 64-bits depending on mode
   if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
-      (opcode >= JNZ && opcode <= JMP) || (opcode >= LOAD && opcode <= INSM)) {
+      (opcode >= JNZ && opcode <= JMP) || opcode == SETHDLR ||
+      (opcode >= LOAD && opcode <= INSM)) {
     if (mode == 0x00) {
       aux.u64 = arg1;
     } else if (mode == 0x01) {
@@ -71,8 +84,10 @@ inline retcode vm_run_step(struct vm *vm) {
       aux.u64 = decode_u64(curpos);
       vm->code_offset += 8;
     } else {
-      printf("error: unknown mode %d, opc: %d, addr: %p\n", mode, opcode,
-             curpos);
+      vm_set_error(vm, 0x13,
+                   "unknown mode for feed (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
   }
@@ -110,6 +125,16 @@ inline retcode vm_run_step(struct vm *vm) {
              vm->resv_data);
     }
 
+    if (vm->error_handler != 0) {
+      printf("error handler at: %p (%p + %lu)\n", vm->code + vm->error_handler,
+             vm->code, vm->error_handler);
+    }
+
+    if (vm->error_code != 0) {
+      printf("\t[on error] code: 0x%08x, message: %s\n", vm->error_code,
+             vm->error_message);
+    }
+
     printf("data stack:\n");
     stack_print(&vm->data);
 
@@ -139,7 +164,10 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case DIV:
     if (right.u64 == 0LL) {
-      printf("error: divide by zero, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x15,
+                   "divide by zero (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
@@ -147,7 +175,10 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case MOD:
     if (right.u64 == 0LL) {
-      printf("error: modulo by zero, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x15,
+                   "modulo by zero (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
@@ -228,18 +259,20 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case CALL:
     if (stack_push(&vm->call, (union value)vm->code_offset) == ERROR) {
-      printf("error: cannot call %lu because call stack is overflown, opc: %d, "
-             "addr: %p\n",
-             aux.size, opcode, curpos);
+      vm_set_error(vm, 0x16,
+                   "cannot call %lu because stack is overflown (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   aux.size, opcode, mode, arg1);
       return ERROR;
     }
     vm_jmp(vm, aux.size);
     break;
   case RET:
     if (stack_pop(&vm->call, &aux) == ERROR) {
-      printf("error: cannot ret because call stack is empty, opc: %d, "
-             "addr: %p\n",
-             opcode, curpos);
+      vm_set_error(vm, 0x15,
+                   "cannot ret because stack is empty (opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
     vm_jmp(vm, aux.size);
@@ -263,16 +296,20 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case BULK:
     if (left.size >= vm->code_size) {
-      printf("error: trying to copy byets from outside of code segment, opc: "
-             "%d, addr: %p\n",
-             opcode, curpos);
+      vm_set_error(vm, 0x18,
+                   "cannot copy bytes that are outside code range "
+                   "(opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
-    if (right.size > vm->resv_size) {
-      printf("error: trying to copy a block bigger than allocated, opc: %d, "
-             "addr: %p\n",
-             opcode, curpos);
+    if (right.size > vm->resv_size - aux.size) {
+      vm_set_error(vm, 0x19,
+                   "cannot copy bytes bigger than available space "
+                   "(opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
@@ -281,13 +318,21 @@ inline retcode vm_run_step(struct vm *vm) {
   case LOAD:
     right.size = *(vm->resv_data + aux.size);
     if (stack_push(&vm->data, right) == ERROR) {
-      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x20,
+                   "stack overflow on load "
+                   "(opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
     break;
   case STORE:
     if (stack_pop(&vm->data, &right) == ERROR) {
-      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x21,
+                   "empty stack for store "
+                   "(opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
 
@@ -303,15 +348,34 @@ inline retcode vm_run_step(struct vm *vm) {
     }
     printf("\n====================================\n");
     break;
+  case SETHDLR:
+    vm->error_handler = aux.size;
+    break;
+  case SETERR:
+    vm_set_error(vm, left.i32, "%s", (char *)vm->resv_data + right.size);
+    return ERROR;
+  case CLRERR:
+    if (vm->error_message != NULL && vm->should_free_error) {
+      free(vm->error_message);
+    }
+
+    vm->should_free_error = 0;
+    vm->error_message = NULL;
+    vm->error_code = 0;
+    break;
   default:
-    printf("error: unrecognized or unsupported opc: %#02x, addr: %p\n", opcode,
+    printf("unrecognized or unsupported opc: %#02x, addr: %p\n", opcode,
            curpos);
     return ERROR;
   }
 
   if (opcode == PUSH || (opcode >= ADD && opcode <= NOT)) {
     if (stack_push(&vm->data, aux) == ERROR) {
-      printf("error: stack overflow, opc: %d, addr: %p\n", opcode, curpos);
+      vm_set_error(vm, 0x20,
+                   "stack overflow "
+                   "(opcode=%02hhX, "
+                   "mode=%02hhX, arg1=%" PRIu64 ")",
+                   opcode, mode, arg1);
       return ERROR;
     }
   }
@@ -415,14 +479,18 @@ retcode vm_init(struct vm *vm, const char *filename) {
   assert(vm != NULL);
   assert(filename != NULL);
 
-  stack_init(&vm->data, 32);
-  stack_init(&vm->call, 32);
+  stack_init(&vm->data, 4);
+  stack_init(&vm->call, 4);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
   vm->halted = 0;
   vm->resv_size = 0L;
   vm->resv_data = NULL;
+  vm->error_handler = 0L;
+  vm->error_message = NULL;
+  vm->error_code = 0;
+  vm->should_free_error = 0;
 
   FILE *file = fopen(filename, "rb");
   if (file == NULL) {
@@ -436,7 +504,7 @@ retcode vm_init(struct vm *vm, const char *filename) {
 
   uint8_t *buffer = malloc(sizeof(uint8_t) * filelen);
   if (fread(buffer, sizeof(uint8_t), filelen, file) != filelen) {
-    printf("error: could not read complete file!\n");
+    fprintf(stderr, "error: could not read complete file!\n");
     return ERROR;
   }
 
@@ -455,8 +523,42 @@ void vm_free(struct vm *vm) {
     free(vm->resv_data);
   }
 
+  if (vm->error_message != NULL && vm->should_free_error) {
+    free(vm->error_message);
+  }
+
   stack_free(&vm->data);
   stack_free(&vm->call);
+}
+
+void vm_set_error(struct vm *vm, int error_code, const char *user_format, ...) {
+  if (vm->error_message != NULL) {
+    fprintf(stderr,
+            "error: only one error can be handled right now (at %p + %lu)\n",
+            vm->code, vm->code_offset);
+    return;
+  }
+
+  size_t user_format_len = strlen(user_format);
+  char *format = malloc(user_format_len + 80);
+  char *error_message = malloc(MAX_ERROR_MESSAGE_LEN);
+  char *position = malloc(50);
+  sprintf(position, " (at %p + %lu)(code %d)\n", vm->code, vm->code_offset,
+          error_code);
+  memset(format, 0L, user_format_len + 50);
+  memcpy(format, user_format, strlen(user_format));
+  memcpy(format + user_format_len, position, 50);
+  free(position);
+
+  va_list args;
+  va_start(args, user_format);
+  vsprintf(error_message, format, args);
+  va_end(args);
+  free(format);
+
+  vm->should_free_error = 1;
+  vm->error_message = error_message;
+  vm->error_code = error_code;
 }
 
 inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
@@ -465,15 +567,33 @@ inline retcode vm_jmp(struct vm *vm, size_t new_offset) {
     return SUCCESS;
   }
 
-  printf("error: cannot jump outside from code segment, code addr: %p, offset: "
-         "%ld, new addr: %p\n",
-         vm->code, new_offset, vm->code + new_offset);
+  vm_set_error(vm, 0x22, "cannot jump outside code segment");
   return ERROR;
 }
 
 retcode vm_run(struct vm *vm) {
   while (vm->halted == 0) {
-    if (vm_run_step(vm) == ERROR) {
+    retcode rc = vm_run_step(vm);
+    if (rc == ERROR && vm->error_handler != 0L) {
+#ifdef CVM_PRINT_ALL_ERRORS
+      fprintf(stderr, "error: %s\n", vm->error_message);
+#endif
+      if (stack_push(&vm->data, (union value)vm->error_code) == ERROR) {
+        fprintf(stderr, "error: cannot push error code for handler\n");
+        vm->halted = 1;
+        return ERROR;
+      }
+
+      if (stack_push(&vm->call, (union value)vm->code_offset) == ERROR) {
+        fprintf(stderr, "error: cannot push return address for handler\n");
+        vm->halted = 1;
+        return ERROR;
+      }
+
+      vm_jmp(vm, vm->error_handler);
+    } else if (rc == ERROR) {
+      fprintf(stderr, "error: handler not present, halting machine\n");
+      vm->halted = 1;
       return ERROR;
     }
   }
@@ -489,13 +609,13 @@ int main(int argc, char **argv) {
   char *filename = argv[1];
   struct vm vm;
   if (vm_init(&vm, filename) == ERROR) {
-    printf("could not initialize vm\n");
+    fprintf(stderr, "could not initialize vm\n");
     vm_free(&vm);
     return 1;
   }
 
   if (vm_run(&vm) == ERROR) {
-    printf("vm run failed\n");
+    fprintf(stderr, "vm run failed\n");
     vm_free(&vm);
     return 1;
   }
