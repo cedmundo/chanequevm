@@ -104,7 +104,7 @@ char *strdup(const char *src) {
 source: instructions
 instructions: %empty
   | instruction instructions
-  | label instruction instructions
+  | ENDL instructions
   ;
 
 label:
@@ -116,7 +116,8 @@ mode: ID
 arg1: AMP ID | ID | NUMBER | STRING
 
 instruction:
-  ID mode arg1 ENDL
+  label instruction
+  | ID mode arg1 ENDL
   | ID arg1 ENDL
   | ID ENDL
   ;
