@@ -73,13 +73,13 @@ inline retcode vm_run_step(struct vm *vm) {
   if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
       (opcode >= JNZ && opcode <= JMP) || opcode == SETHDLR ||
       (opcode >= LOAD && opcode <= INSM)) {
-    if (mode == 0x00) {
+    if (mode == 0x00 || mode == 0x01) {
       aux.u64 = arg1;
-    } else if (mode == 0x01) {
+    } else if (mode == 0x02) {
       curpos = vm->code + vm->code_offset;
       aux.u64 = decode_u32(curpos);
       vm->code_offset += 4;
-    } else if (mode == 0x02) {
+    } else if (mode == 0x03) {
       curpos = vm->code + vm->code_offset;
       aux.u64 = decode_u64(curpos);
       vm->code_offset += 8;
