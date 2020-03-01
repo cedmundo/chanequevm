@@ -32,7 +32,7 @@ inline retcode vm_run_step(struct vm *vm) {
   uint16_t arg1 = decode_arg1(step);
 
   // fill left, right arguments when needed from stack
-  if ((opcode >= ADD && opcode <= GE) || opcode == BULK || opcode == SETERR) {
+  if ((opcode >= ADD && opcode <= GE) || opcode == SETERR || opcode == PSEG) {
     if (stack_pop(&vm->data, &right) == ERROR) {
       vm_set_error(vm, 0x10,
                    "missing stack right parameter (opcode=%02hhX, "
@@ -58,21 +58,9 @@ inline retcode vm_run_step(struct vm *vm) {
     }
   }
 
-  // check if there is allocated memory before bulking or inspecting
-  if (opcode >= BULK && opcode <= INSM) {
-    if (vm->resv_data == NULL || vm->resv_size == 0L) {
-      vm_set_error(vm, 0x12,
-                   "no previously reserved memory (opcode=%02hhX, "
-                   "mode=%02hhX, arg1=%" PRIu64 ")",
-                   opcode, mode, arg1);
-      return ERROR;
-    }
-  }
-
   // fill aux param from arg0, next 32-bits or next 64-bits depending on mode
-  if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
-      (opcode >= JNZ && opcode <= JMP) || opcode == SETHDLR ||
-      (opcode >= LOAD && opcode <= INSM)) {
+  if (opcode == PUSH || opcode == CALL || opcode == SETHDLR || opcode == LOAD ||
+      opcode == STORE || (opcode >= JNZ && opcode <= JMP)) {
     if (mode == 0x00 || mode == 0x01) {
       aux.u64 = arg1;
     } else if (mode == 0x02) {
@@ -104,26 +92,16 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case HALT:
     vm->halted = 1;
-    if (vm->resv_data != NULL) {
-      free(vm->resv_data);
-      vm->resv_data = NULL;
-      vm->resv_size = 0L;
-    }
-
     printf("vm has been halted\n");
     break;
-  case CLEAR_STACK:
+  case CLRS:
     while (stack_pop(&vm->data, &aux) != ERROR)
       ;
     break;
-  case PRINT_STATE:
+  case PSTATE:
     printf("============= vm state =============\n");
     printf("code section: %p, size: %ld, offset: %ld\n", vm->code,
            vm->code_size, vm->code_offset);
-    if (vm->resv_data != NULL) {
-      printf("total memory requested: %ld bytes on %p\n", vm->resv_size,
-             vm->resv_data);
-    }
 
     if (vm->error_handler != 0) {
       printf("error handler at: %p (%p + %lu)\n", vm->code + vm->error_handler,
@@ -244,7 +222,7 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case JNZ:
     if (left.u64 != 0LL) {
-      vm_jmp(vm, aux.u64);
+      vm_jmp(vm, aux.size);
     }
     stack_push(&vm->data, left);
     break;
@@ -277,46 +255,8 @@ inline retcode vm_run_step(struct vm *vm) {
     }
     vm_jmp(vm, aux.size);
     break;
-  case RESV:
-    if (vm->resv_data != NULL) {
-      vm->resv_data =
-          realloc(vm->resv_data, sizeof(uint8_t) * vm->resv_size + aux.size);
-      vm->resv_size = vm->resv_size + aux.size;
-    } else {
-      vm->resv_data = malloc(sizeof(uint8_t) * aux.size);
-      vm->resv_size = aux.size;
-    }
-    break;
-  case FREE:
-    if (vm->resv_data != NULL) {
-      free(vm->resv_data);
-    }
-    vm->resv_data = NULL;
-    vm->resv_size = 0L;
-    break;
-  case BULK:
-    if (left.size >= vm->code_size) {
-      vm_set_error(vm, 0x18,
-                   "cannot copy bytes that are outside code range "
-                   "(opcode=%02hhX, "
-                   "mode=%02hhX, arg1=%" PRIu64 ")",
-                   opcode, mode, arg1);
-      return ERROR;
-    }
-
-    if (right.size > vm->resv_size - aux.size) {
-      vm_set_error(vm, 0x19,
-                   "cannot copy bytes bigger than available space "
-                   "(opcode=%02hhX, "
-                   "mode=%02hhX, arg1=%" PRIu64 ")",
-                   opcode, mode, arg1);
-      return ERROR;
-    }
-
-    memcpy(vm->resv_data + aux.size, vm->code + left.size, right.size);
-    break;
   case LOAD:
-    right.size = *(vm->resv_data + aux.size);
+    right.size = *(vm->code + aux.size);
     if (stack_push(&vm->data, right) == ERROR) {
       vm_set_error(vm, 0x20,
                    "stack overflow on load "
@@ -336,15 +276,15 @@ inline retcode vm_run_step(struct vm *vm) {
       return ERROR;
     }
 
-    *(vm->resv_data + aux.size) = right.u64;
+    *(vm->code + aux.size) = right.u64;
     break;
-  case INSM:
+  case PSEG:
     printf("============= memory inspect =============\n");
-    printf("%ld bytes of memory on "
+    printf("output of %ld bytes of memory on "
            "%p: \n",
-           vm->resv_size, vm->resv_data);
-    for (size_t i = 0; i < vm->resv_size; i++) {
-      printf("%02hhX ", vm->resv_data[i]);
+           left.u64, vm->code + right.size);
+    for (size_t i = 0; i < left.size; i++) {
+      printf("%02hhX ", (vm->code + right.size)[i]);
     }
     printf("\n====================================\n");
     break;
@@ -352,7 +292,7 @@ inline retcode vm_run_step(struct vm *vm) {
     vm->error_handler = aux.size;
     break;
   case SETERR:
-    vm_set_error(vm, left.i32, "%s", (char *)vm->resv_data + right.size);
+    vm_set_error(vm, left.i32, "%s", (char *)vm->code + right.size);
     return ERROR;
   case CLRERR:
     if (vm->error_message != NULL && vm->should_free_error) {
@@ -485,8 +425,6 @@ retcode vm_init(struct vm *vm, const char *filename) {
   vm->code_size = 0L;
   vm->code_offset = 0L;
   vm->halted = 0;
-  vm->resv_size = 0L;
-  vm->resv_data = NULL;
   vm->error_handler = 0L;
   vm->error_message = NULL;
   vm->error_code = 0;
@@ -517,10 +455,6 @@ retcode vm_init(struct vm *vm, const char *filename) {
 void vm_free(struct vm *vm) {
   if (vm->code != NULL) {
     free(vm->code);
-  }
-
-  if (vm->resv_data != NULL) {
-    free(vm->resv_data);
   }
 
   if (vm->error_message != NULL && vm->should_free_error) {
@@ -592,6 +526,7 @@ retcode vm_run(struct vm *vm) {
 
       vm_jmp(vm, vm->error_handler);
     } else if (rc == ERROR) {
+      fprintf(stderr, "error: %s\n", vm->error_message);
       fprintf(stderr, "error: handler not present, halting machine\n");
       vm->halted = 1;
       return ERROR;
