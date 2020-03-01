@@ -25,18 +25,18 @@ static int i_modes[] = {
 };
 
 static char* s_mnemonics[] = {
-  "NOP", "HALT", "CLRSTACK", "PS", "PUSH", "POP",
+  "NOP", "HALT", "CLRSTACK", "PSTATE", "PUSH", "POP",
   "SWAP", "ROT3", "ADD", "SUB", "DIV", "MUL", "MOD", "AND", "OR",
   "XOR", "NEQ", "EQ", "LT", "LE", "GT", "GE", "NOT", "JNZ", "JZ", "JMP",
-  "CALL", "RET", "RESV", "FREE", "BULK", "LOAD", "STORE", "INSM",
+  "CALL", "RET", "LOAD", "STORE", "PSEG",
   "SETHDLR", "SETERR", "CLRERR", "DATA", NULL
 };
 
 static int i_opcodes[] = {
   0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
   0x06, 0x07, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x1A, 0x1B,
-  0x1C, 0x1D, 0x1F, 0x20, 0x21, 0x22, 0x30, 0x31, 0x32, 0x33, 0x35,
-  0x36, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45,
+  0x1C, 0x1D, 0x1F, 0x20, 0x21, 0x22, 0x30, 0x31, 0x32, 0x33,
+  0x35, 0x36, 0x43, 0x44, 0x45,
   0x50, 0x51, 0x52, 0x00
 };
 
@@ -164,6 +164,7 @@ arg1: AMP id
   | NUMBER
   {
     struct typed_value lit;
+    memset(&lit, 0L, sizeof(struct typed_value));
     lit.is_ref = 0;
 
     char *valcpy = strdup(strval);
@@ -275,7 +276,6 @@ arg1: AMP id
     default:
       assert(0); // Unreachable
     }
-
     free(nclean);
     free(valcpy);
 
@@ -284,8 +284,11 @@ arg1: AMP id
   }
   | STRING
   {
+    char *unquoted = calloc(strlen(strval)-1, sizeof(char));
+    memset(unquoted, 0L, strlen(strval)-1);
+    strncpy(unquoted, strval+1, strlen(strval)-2);
     struct typed_value lit;
-    lit.value.str = strval;
+    lit.value.str = unquoted;
     lit.mode = STR;
     lit.is_ref = 0;
     $$ = lit;
@@ -352,9 +355,9 @@ instruction:
 size_t instruction_calculate_size(struct instruction *instruction) {
   int opcode = instruction->mnemonic;
   int mode = instruction->mode;
-  if (opcode == PUSH || opcode == RESV || opcode == BULK || opcode == CALL ||
+  if (opcode == PUSH || opcode == CALL ||
       (opcode >= JNZ && opcode <= JMP) || opcode == SETHDLR ||
-      (opcode >= LOAD && opcode <= INSM)) {
+      (opcode >= LOAD && opcode <= PSEG)) {
     if (mode == 0x00 || mode == WORD) {
       instruction->size = 4;
     } else if (mode == DWORD) {
@@ -439,6 +442,8 @@ struct label_location *find_label(struct source *src, const char *wanted) {
     if (strcmp(cur->label, wanted) == 0) {
       return cur;
     }
+
+    cur = cur->next;
   }
 
   return NULL;

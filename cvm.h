@@ -32,8 +32,6 @@ struct vm {
   uint8_t *code;
   size_t code_size;
   size_t code_offset;
-  size_t resv_size;
-  uint8_t *resv_data;
   size_t error_handler;
   char *error_message;
   int should_free_error;
@@ -43,8 +41,8 @@ struct vm {
 enum opcode {
   NOP = 0x00,
   HALT = 0x01,
-  CLEAR_STACK = 0x02,
-  PRINT_STATE = 0x03,
+  CLRS = 0x02,
+  PSTATE = 0x03,
   PUSH = 0x04,
   POP = 0x05,
   SWAP = 0x06,
@@ -79,12 +77,9 @@ enum opcode {
   RET = 0x36,
 
   /* Memory stack */
-  RESV = 0x40,
-  FREE = 0x41,
-  BULK = 0x42,
   LOAD = 0x43,
   STORE = 0x44,
-  INSM = 0x45,
+  PSEG = 0x45,
 
   /* Error handling */
   SETHDLR = 0x50,
