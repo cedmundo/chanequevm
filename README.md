@@ -28,8 +28,8 @@ The following table has all the supported instructions right now:
 
 | Mnemonic | opcode | modes | arg1       | stack pops       | stack pushes                    | Description                                                                |
 |----------|--------|-------|------------|------------------|---------------------------------|----------------------------------------------------------------------------|
-| nop      | 0x00   | -     | -          | -                | -                               | Nothing                                                                    |
-| hal      | 0x01   | -     | -          | -                | -                               | Stops the VM                                                               |
+| nop      | 0x00   | -     | -          | -                | -                               | Do nothing                                                                    |
+| halt     | 0x01   | -     | -          | -                | -                               | Stops the VM                                                               |
 | clsstack | 0x02   | -     | -          | -                | -                               | Clears the main stack                                                      |
 | pstate   | 0x03   | -     | -          | -                | -                               | Prints the general vm state                                                |
 | push     | 0x04   | Feed  | Direct u16 | -                | -                               | Push a value into the stack                                                |
@@ -54,16 +54,13 @@ The following table has all the supported instructions right now:
 | jnz      | 0x31   | Feed  | Direct u16 | left             | -                               | Jumps to the requested offset if left != 0                                 |
 | jz       | 0x32   | Feed  | Direct u16 | left             | -                               | Jumps to the requested offset if left == 0                                 |
 | jmp      | 0x33   | Feed  | Direct u16 | left             | -                               | Jumps inconditionally to the requested offset                              |
-| resv     | 0x40   | Feed  | Direct u16 | left             | -                               | Allocates the requested bytes of memory                                    |
-| free     | 0x41   | -     | -          | -                | -                               | Frees the reserved memory                                                  |
-| bulk     | 0x42   | Feed  | Direct u16 | o, s             | -                               | Dumps the s bytes of the source code with offset o on the allocated memory |
 | load     | 0x43   | Feed  | Direct u16 | -                | a value from memory             | Reads a value from the requested offset and pushes it on stack             |
 | store    | 0x44   | Feed  | Direct u16 | left             | -                               | Pops the stack and puts the value on the requested offset                  |
-| insm     | 0x45   | Feed  | Direct u16 | -                | -                               | Prints all the bytes on allocated memory                                   |
+| pseg     | 0x45   | Feed  | Direct u16 | -                | -                               | Prints all the bytes on allocated memory                                   |
 
-The `Feed` mode means that the VM will read following 32-bits or 64-bits if needed: 
+The `Feed` mode means that the VM will read following 32-bits or 64-bits if needed:
 * Mode 0 - No feed, arg included on instruction.
-* Mode 1 - Feed 32 bits for arg. 
+* Mode 1 - Feed 32 bits for arg.
 * Mode 2 - Feed 64 bits for arg.
 
 ## FAQ
