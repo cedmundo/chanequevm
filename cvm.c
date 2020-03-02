@@ -169,7 +169,7 @@ inline retcode vm_run_step(struct vm *vm) {
     value_op_nof(|, mode, aux, left, right);
     break;
   case XOR:
-    value_op_nof (^, mode, aux, left, right);
+    value_op_nof(^, mode, aux, left, right);
     break;
   case NEQ:
     value_op(!=, mode, aux, left, right);
@@ -280,7 +280,7 @@ inline retcode vm_run_step(struct vm *vm) {
     break;
   case PSEG:
     printf("============= memory inspect =============\n");
-    printf("output of %ld bytes of memory on "
+    printf("output of %llu bytes of memory on "
            "%p: \n",
            left.u64, vm->code + right.size);
     for (size_t i = 0; i < left.size; i++) {

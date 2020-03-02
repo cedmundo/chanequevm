@@ -80,10 +80,6 @@ int yyerror(struct source *, const char*);
 
 %}
 
-%code requires {
-  #include "chasm.h"
-}
-
 %parse-param {struct source *src}
 
 %start source

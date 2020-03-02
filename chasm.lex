@@ -1,6 +1,7 @@
 %{
 
 #include <stdio.h>
+#include "chasm.h"
 #include "y.tab.h"
 
 extern char* strval;
