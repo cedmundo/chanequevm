@@ -71,6 +71,29 @@ inline retcode vm_run_step(struct vm *vm) {
       curpos = vm->code + vm->code_offset;
       aux.u64 = decode_u64(curpos);
       vm->code_offset += 8;
+    } else if (opcode == PUSH && mode == 0x04) {
+      // Push the value of the current address and jump [arg1] bytes
+      if (arg1 % 4 != 0) {
+        vm_set_error(
+            vm, 0x90,
+            "next instruction must be 4-byte aligned after pushing bytes "
+            "(opcode=%02hhX, "
+            "mode=%02hhX, arg1=%" PRIu64 ")",
+            opcode, mode, arg1);
+        return ERROR;
+      }
+
+      aux.data = (char *)vm->code + vm->code_offset;
+      if (*(vm->code + vm->code_offset + arg1 - 1) != '\0') {
+        vm_set_error(
+            vm, 0x90,
+            "unsafe non-null terminated string used as string argument "
+            "(opcode=%02hhX, "
+            "mode=%02hhX, arg1=%" PRIu64 ")",
+            opcode, mode, arg1);
+        return ERROR;
+      }
+      vm->code_offset += arg1;
     } else {
       vm_set_error(vm, 0x13,
                    "unknown mode for feed (opcode=%02hhX, "
@@ -292,7 +315,20 @@ inline retcode vm_run_step(struct vm *vm) {
     vm->error_handler = aux.size;
     break;
   case SETERR:
-    vm_set_error(vm, left.i32, "%s", (char *)vm->code + right.size);
+    if (mode == 0x00) {
+      vm_set_error(vm, left.i32, "%s", (char *)vm->code + right.size);
+    } else if (mode == 0x1) {
+      if (right.data >= (char *)vm->code &&
+          right.data < (char *)vm->code + vm->code_offset) {
+        vm_set_error(vm, left.i32, "%s", right.data);
+      } else {
+        vm_set_error(vm, 0x91,
+                     "unsafe error"
+                     "(opcode=%02hhX, "
+                     "mode=%02hhX, arg1=%" PRIu64 ")",
+                     opcode, mode, arg1);
+      }
+    }
     return ERROR;
   case CLRERR:
     if (vm->error_message != NULL && vm->should_free_error) {
