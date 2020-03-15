@@ -1,6 +1,6 @@
 cvm:
 	mkdir -p bin
-	gcc -g -o bin/cvm cvm.c
+	gcc -Wl,--export-dynamic -g -o bin/cvm cvm.c -ldl
 
 chasm:
 	mkdir -p bin

@@ -16,7 +16,7 @@ union value {
   float f32;
   double f64;
   size_t size;
-  char *data;
+  void *data;
 };
 
 struct stack {
@@ -26,16 +26,23 @@ struct stack {
 };
 
 struct vm {
-  struct stack data; // data stack, main operation source
-  struct stack call; // call stack, where return addresses are stored
-  int halted;
   uint8_t *code;
+  struct stack data;        // data stack, main operation source
+  struct stack call;        // call stack, where return addresses are stored
+  struct stack ffi_libs;    // dlopen handler for libs, string to address
+  struct stack ffi_externs; // extern function declarations
   size_t code_size;
   size_t code_offset;
   size_t error_handler;
   char *error_message;
   int should_free_error;
   int error_code;
+  int halted;
+  int ffi_selected_lib;
+  void *ffi_ext_page;
+  size_t ffi_ext_page_used;
+  size_t ffi_ext_page_size;
+  int ffi_ext_exec_mode;
 };
 
 enum opcode {
@@ -85,9 +92,17 @@ enum opcode {
   SETHDLR = 0x50,
   SETERR = 0x51,
   CLRERR = 0x52,
+
+  /* FFI Stuff */
+  FFI_LIB_LOAD = 0x60,
+  FFI_LIB_SELECT = 0x61,
+  FFI_MAKE_EXTERN = 0x62,
+  FFI_MAKE_DONE = 0x63,
+  FFI_CALL = 0x64,
 };
 
 typedef enum retcode { ERROR, SUCCESS } retcode;
+typedef void (*ffi_entry_point)(struct vm *);
 
 void stack_init(struct stack *s, size_t cap);
 void stack_free(struct stack *s);
@@ -106,7 +121,10 @@ retcode vm_run(struct vm *vm);
 
 retcode vm_jmp(struct vm *vm, size_t new_offset);
 
+retcode ffi_make_extern(struct vm *vm);
+
 #define MAX_ERROR_MESSAGE_LEN 255
+#define DEFAULT_EXT_PAGE_SIZE 4096
 #define decode_u32(bytes)                                                      \
   (bytes[0] + ((uint32_t)bytes[1] << 8) + ((uint32_t)bytes[2] << 16) +         \
    ((uint32_t)bytes[3] << 24))

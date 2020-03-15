@@ -1,10 +1,13 @@
+#define _GNU_SOURCE
 #include "cvm.h"
 #include <assert.h>
+#include <dlfcn.h>
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 
 inline retcode vm_run_step(struct vm *vm) {
   assert(vm != NULL);
@@ -48,7 +51,8 @@ inline retcode vm_run_step(struct vm *vm) {
                    opcode, mode, arg1);
       return ERROR;
     }
-  } else if (opcode >= NOT && opcode <= JZ) {
+  } else if ((opcode >= NOT && opcode <= JZ) || opcode == FFI_LIB_LOAD ||
+             opcode == FFI_LIB_SELECT) {
     if (stack_pop(&vm->data, &left) == ERROR) {
       vm_set_error(vm, 0x11,
                    "missing stack parameter (opcode=%02hhX, "
@@ -60,7 +64,8 @@ inline retcode vm_run_step(struct vm *vm) {
 
   // fill aux param from arg0, next 32-bits or next 64-bits depending on mode
   if (opcode == PUSH || opcode == CALL || opcode == SETHDLR || opcode == LOAD ||
-      opcode == STORE || (opcode >= JNZ && opcode <= JMP)) {
+      opcode == STORE || opcode == FFI_CALL ||
+      (opcode >= JNZ && opcode <= JMP)) {
     if (mode == 0x00 || mode == 0x01) {
       aux.u64 = arg1;
     } else if (mode == 0x02) {
@@ -141,6 +146,12 @@ inline retcode vm_run_step(struct vm *vm) {
 
     printf("call stack:\n");
     stack_print(&vm->call);
+
+    printf("ffi selected lib: %d\n", vm->ffi_selected_lib);
+    printf("  libs stack:\n");
+    stack_print(&vm->ffi_libs);
+    printf("  externs stack:\n");
+    stack_print(&vm->ffi_externs);
     printf("\n====================================\n");
     break;
   case PUSH:
@@ -318,8 +329,8 @@ inline retcode vm_run_step(struct vm *vm) {
     if (mode == 0x00) {
       vm_set_error(vm, left.i32, "%s", (char *)vm->code + right.size);
     } else if (mode == 0x1) {
-      if (right.data >= (char *)vm->code &&
-          right.data < (char *)vm->code + vm->code_offset) {
+      if (right.data >= (void *)vm->code &&
+          right.data < (void *)vm->code + vm->code_offset) {
         vm_set_error(vm, left.i32, "%s", right.data);
       } else {
         vm_set_error(vm, 0x91,
@@ -339,6 +350,31 @@ inline retcode vm_run_step(struct vm *vm) {
     vm->error_message = NULL;
     vm->error_code = 0;
     break;
+  case FFI_LIB_LOAD:
+    aux.data = dlopen(left.data, RTLD_LAZY);
+    if (aux.data == NULL) {
+      vm_set_error(vm, 0x60, "cannot load library: %s", dlerror());
+      return ERROR;
+    }
+    stack_push(&vm->ffi_libs, aux);
+    vm->ffi_selected_lib++;
+    break;
+  case FFI_LIB_SELECT:
+    vm->ffi_selected_lib = left.i32;
+    break;
+  case FFI_MAKE_EXTERN:
+    if (ffi_make_extern(vm) == ERROR) {
+      return ERROR;
+    }
+    break;
+  case FFI_MAKE_DONE:
+    mprotect(vm->ffi_ext_page, vm->ffi_ext_page_size, PROT_READ | PROT_EXEC);
+    vm->ffi_ext_exec_mode = 1;
+    break;
+  case FFI_CALL: {
+    // ffi_entry_point callable = (ffi_entry_point)(*(vm->code + aux.size));
+    // (*callable)(vm);
+  } break;
   default:
     printf("unrecognized or unsupported opc: %#02x, addr: %p\n", opcode,
            curpos);
@@ -356,6 +392,74 @@ inline retcode vm_run_step(struct vm *vm) {
     }
   }
 
+  return SUCCESS;
+}
+
+retcode ffi_make_extern(struct vm *vm) {
+  assert(vm != NULL);
+  if (vm->ffi_ext_exec_mode != 0) {
+    vm_set_error(vm, 0x66,
+                 "FFI_MAKE_EXTERN called after FFI_MAKE_DONE, cannot create "
+                 "new FFI entries\n");
+    return ERROR;
+  }
+
+  union value v_argc = {.u64 = 0LL};
+  if (stack_pop(&vm->data, &v_argc) == ERROR) {
+    vm_set_error(vm, 0x64, "missing argc argument to build extern call\n");
+    return ERROR;
+  }
+
+  char *gen = vm->ffi_ext_page + vm->ffi_ext_page_used;
+  size_t write_cursor = 0LL;
+
+  union value v_name = {.u64 = 0LL};
+  if (stack_pop(&vm->data, &v_name) == ERROR) {
+    vm_set_error(vm, 0x64, "missing symbol name to build extern call\n");
+    return ERROR;
+  }
+
+  assert(v_name.data != NULL);
+  union value v_handler = vm->ffi_libs.bot[vm->ffi_selected_lib];
+  void *target_addr = dlsym(v_handler.data, v_name.data);
+  if (target_addr == NULL) {
+    vm_set_error(vm, 0x65,
+                 "cannot resolve symbol '%s' on current lib: %p, error: %s\n",
+                 v_name.data, v_handler, dlerror());
+    return ERROR;
+  }
+
+  union value v_store_target = {.u64 = 0LL};
+  if (stack_pop(&vm->data, &v_store_target) == ERROR) {
+    vm_set_error(vm, 0x64, "missing store target extern call\n");
+    return ERROR;
+  }
+
+  printf("make extern: store target: %lu, target address: %p, argc: %d\n",
+         v_store_target.size, target_addr, v_argc.u32);
+
+  // push ebp
+  // mov ebp, esp
+  const char f_head[] = {0x55, 0x48, 0x89, 0xE5};
+  memcpy(gen + write_cursor, f_head, sizeof(f_head));
+  write_cursor += sizeof(f_head);
+
+  // call [addr]
+  const char f_call[] = {};
+  memcpy(gen + write_cursor, f_call, sizeof(f_call));
+  write_cursor += sizeof(f_call) + sizeof(void *);
+
+  // pop ebp
+  // ret
+  const char f_tail[] = {0x5D, 0xC3};
+  memcpy(gen + write_cursor, f_tail, sizeof(f_tail));
+  write_cursor += sizeof(f_tail);
+  vm->ffi_ext_page_used = write_cursor;
+
+  // Assign the entry point to the store target
+  *((ffi_entry_point *)vm->code + v_store_target.size) = (ffi_entry_point)gen;
+
+  ((ffi_entry_point)gen)(vm);
   return SUCCESS;
 }
 
@@ -455,8 +559,10 @@ retcode vm_init(struct vm *vm, const char *filename) {
   assert(vm != NULL);
   assert(filename != NULL);
 
-  stack_init(&vm->data, 4);
-  stack_init(&vm->call, 4);
+  stack_init(&vm->data, 32);
+  stack_init(&vm->call, 32);
+  stack_init(&vm->ffi_libs, 4);
+  stack_init(&vm->ffi_externs, 4);
   vm->code = NULL;
   vm->code_size = 0L;
   vm->code_offset = 0L;
@@ -465,6 +571,11 @@ retcode vm_init(struct vm *vm, const char *filename) {
   vm->error_message = NULL;
   vm->error_code = 0;
   vm->should_free_error = 0;
+  vm->ffi_selected_lib = 0;
+  vm->ffi_ext_page = NULL;
+  vm->ffi_ext_page_size = 0L;
+  vm->ffi_ext_page_used = 0L;
+  vm->ffi_ext_exec_mode = 0;
 
   FILE *file = fopen(filename, "rb");
   if (file == NULL) {
@@ -485,6 +596,22 @@ retcode vm_init(struct vm *vm, const char *filename) {
   vm->code = buffer;
   vm->code_size = filelen;
   fclose(file);
+
+  // Load self symbols
+  union value vm_dl_handler = {.data = dlopen(NULL, RTLD_LAZY)};
+  if (vm_dl_handler.data == NULL) {
+    fprintf(stderr, "introspection error (self loading): %s\n", dlerror());
+    return ERROR;
+  }
+  stack_push(&vm->ffi_libs, vm_dl_handler);
+
+  // Create a new page to dump FFI code (JIT)
+  // TODO: remove prot_exec from here
+  vm->ffi_ext_page =
+      mmap(NULL, DEFAULT_EXT_PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
+           MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+  vm->ffi_ext_page_size = DEFAULT_EXT_PAGE_SIZE;
+  vm->ffi_ext_page_used = 0LL;
   return SUCCESS;
 }
 
@@ -497,8 +624,19 @@ void vm_free(struct vm *vm) {
     free(vm->error_message);
   }
 
+  union value libref;
+  while (stack_pop(&vm->ffi_libs, &libref) != ERROR) {
+    dlclose(libref.data);
+  }
+
   stack_free(&vm->data);
   stack_free(&vm->call);
+  stack_free(&vm->ffi_libs);
+  stack_free(&vm->ffi_externs);
+
+  if (vm->ffi_ext_page != NULL) {
+    munmap(vm->ffi_ext_page, vm->ffi_ext_page_size);
+  }
 }
 
 void vm_set_error(struct vm *vm, int error_code, const char *user_format, ...) {
@@ -594,3 +732,5 @@ int main(int argc, char **argv) {
   vm_free(&vm);
   return 0;
 }
+
+void dummy() { puts("C called from VM\n"); }
